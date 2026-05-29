@@ -111,6 +111,9 @@ def test_root_to_public_survey_flow():
     assert stats_json["progress"]["target_count"] == 2
     assert stats_json["sections"][0]["summary"]["options"][0]["count"] == 1
     assert stats_json["sections"][0]["items"][0]["summary"]["options"][0]["count"] == 1
+    assert stats_json["levels"][0]["level"]["id"] == level_id
+    assert stats_json["levels"][0]["progress"]["response_count"] == 1
+    assert stats_json["levels"][0]["overall"]["options"][0]["count"] == 1
 
     unit_delete = client.delete(f"/api/units/{unit['id']}", headers=headers)
     assert unit_delete.status_code == 400

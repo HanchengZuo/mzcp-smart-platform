@@ -213,7 +213,7 @@ def apply_form_structure(form, data):
         form.sections.append(section)
 
 
-def distribution_for_items(form, item_ids):
+def distribution_for_items(form, item_ids, level_id=None):
     if not item_ids:
         return {
             "total": 0,
@@ -239,9 +239,10 @@ def distribution_for_items(form, item_ids):
         .join(SurveyLink)
         .filter(SurveyLink.form_id == form.id)
         .filter(SurveyAnswer.item_id.in_(item_ids))
-        .group_by(SurveyAnswer.option_id, SurveyAnswer.option_label)
-        .all()
     )
+    if level_id is not None:
+        rows = rows.filter(SurveyLink.level_id == level_id)
+    rows = rows.group_by(SurveyAnswer.option_id, SurveyAnswer.option_label).all()
     by_option = {
         option_id: {"count": count, "weighted_sum": weighted_sum}
         for option_id, _label, count, weighted_sum in rows
@@ -292,8 +293,7 @@ def form_progress(form):
     }
 
 
-def form_stats_payload(form):
-    all_item_ids = [item.id for item in form.items]
+def section_stats_for_form(form, level_id=None):
     sections = []
     for section in form.sections:
         section_item_ids = [item.id for item in section.items]
@@ -302,24 +302,44 @@ def form_stats_payload(form):
                 "section_id": section.id,
                 "title": section.title,
                 "sort_order": section.sort_order,
-                "summary": distribution_for_items(form, section_item_ids),
+                "summary": distribution_for_items(form, section_item_ids, level_id),
                 "items": [
                     {
                         "item_id": item.id,
                         "title": item.title,
                         "sort_order": item.sort_order,
-                        "summary": distribution_for_items(form, [item.id]),
+                        "summary": distribution_for_items(form, [item.id], level_id),
                     }
                     for item in section.items
                 ],
             }
         )
+    return sections
+
+
+def level_stats_for_form(form, all_item_ids):
+    stats = []
+    for link in sorted(form.links, key=lambda item: item.level.sort_order if item.level else 0):
+        stats.append(
+            {
+                "level": link.level.to_dict() if link.level else None,
+                "progress": link.to_dict(),
+                "overall": distribution_for_items(form, all_item_ids, link.level_id),
+                "sections": section_stats_for_form(form, link.level_id),
+            }
+        )
+    return stats
+
+
+def form_stats_payload(form):
+    all_item_ids = [item.id for item in form.items]
     return {
         "form": form.to_dict(include_structure=False),
         "options": [option.to_dict() for option in form.options],
         "overall": distribution_for_items(form, all_item_ids),
         "progress": form_progress(form),
-        "sections": sections,
+        "sections": section_stats_for_form(form),
+        "levels": level_stats_for_form(form, all_item_ids),
     }
 
 

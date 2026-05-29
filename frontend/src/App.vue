@@ -172,6 +172,8 @@ function storeUser(nextUser) {
 
 async function login() {
   await run(async () => {
+    error.value = "";
+    message.value = "";
     const result = await api("/auth/login", {
       method: "POST",
       body: JSON.stringify(loginForm.value),
@@ -187,6 +189,8 @@ function logout() {
   setToken("");
   storeUser(null);
   selectedStats.value = null;
+  message.value = "";
+  error.value = "";
 }
 
 async function loadData() {
@@ -425,12 +429,18 @@ onMounted(async () => {
   const savedUser = localStorage.getItem("mzcp_user");
   if (getToken() && savedUser) {
     storeUser(JSON.parse(savedUser));
-    await run(async () => {
+    loading.value = true;
+    try {
       const result = await api("/auth/me");
       storeUser(result.user);
       active.value = result.user.role === "root" ? "dashboard" : "tasks";
       await loadData();
-    });
+    } catch {
+      logout();
+      error.value = "登录已失效，请重新登录";
+    } finally {
+      loading.value = false;
+    }
   }
 });
 </script>
@@ -493,6 +503,8 @@ onMounted(async () => {
       </div>
       <h1>民主测评管理系统</h1>
       <p>root 管理测评任务，巡察组生成二维码并组织填报。</p>
+      <div v-if="message" class="notice success login-notice">{{ message }}</div>
+      <div v-if="error" class="notice error login-notice">{{ error }}</div>
       <form class="stack" @submit.prevent="login">
         <label>
           账号
@@ -716,9 +728,18 @@ onMounted(async () => {
           </div>
           <div class="editable-list">
             <div v-for="item in groups" :key="item.id" class="editable-row">
-              <input v-model="item.name" aria-label="巡察组名称" />
-              <input v-model="item.username" aria-label="账号" />
-              <input v-model="item.password" aria-label="密码" />
+              <label>
+                巡察组名称
+                <input v-model="item.name" aria-label="巡察组名称" />
+              </label>
+              <label>
+                登录账号
+                <input v-model="item.username" aria-label="账号" />
+              </label>
+              <label>
+                登录密码
+                <input v-model="item.password" aria-label="密码" />
+              </label>
               <label class="checkline compact">
                 <input v-model="item.enabled" type="checkbox" />
                 启用
@@ -1111,6 +1132,67 @@ onMounted(async () => {
                   </span>
                 </div>
               </div>
+            </section>
+
+            <section v-if="selectedStats.levels?.length" class="level-stats">
+              <div class="section-stat-title">
+                <strong>按测评人员层级统计</strong>
+                <span>按每个层级二维码分别汇总</span>
+              </div>
+              <article
+                v-for="levelStat in selectedStats.levels"
+                :key="levelStat.level.id"
+                class="level-stat-card"
+              >
+                <div class="level-stat-head">
+                  <div>
+                    <strong>{{ levelStat.level.name }}</strong>
+                    <span>
+                      进度 {{ levelStat.progress.response_count }}/{{ levelStat.progress.target_count }}
+                      · {{ levelStat.progress.completion_percent }}%
+                    </span>
+                  </div>
+                  <strong>{{ levelStat.overall.satisfaction_percent }}%</strong>
+                </div>
+                <div class="bar-track">
+                  <div
+                    class="bar-fill"
+                    :style="{ width: `${levelStat.overall.satisfaction_percent}%` }"
+                  />
+                </div>
+                <div class="count-grid dynamic">
+                  <span v-for="option in levelStat.overall.options" :key="option.option_id">
+                    {{ option.label }} {{ option.count }}
+                  </span>
+                </div>
+                <details class="level-detail">
+                  <summary>查看维度和小项明细</summary>
+                  <section
+                    v-for="section in levelStat.sections"
+                    :key="section.section_id"
+                    class="level-section-detail"
+                  >
+                    <div class="section-stat-title">
+                      <strong>{{ section.title }}</strong>
+                      <span>{{ section.summary.satisfaction_percent }}%</span>
+                    </div>
+                    <div class="count-grid dynamic">
+                      <span v-for="option in section.summary.options" :key="option.option_id">
+                        {{ option.label }} {{ option.count }}
+                      </span>
+                    </div>
+                    <div v-for="item in section.items" :key="item.item_id" class="level-item-detail">
+                      <strong>{{ item.title }}</strong>
+                      <span>{{ item.summary.satisfaction_percent }}%</span>
+                      <div class="count-grid dynamic">
+                        <span v-for="option in item.summary.options" :key="option.option_id">
+                          {{ option.label }} {{ option.count }}
+                        </span>
+                      </div>
+                    </div>
+                  </section>
+                </details>
+              </article>
             </section>
           </div>
         </div>
