@@ -124,6 +124,13 @@ class EvaluationForm(TimestampMixin, db.Model):
     title = db.Column(db.String(160), nullable=False)
     description = db.Column(db.Text, nullable=False, default="")
     status = db.Column(db.String(20), nullable=False, default="active")
+    show_intro = db.Column(db.Boolean, nullable=False, default=True)
+    intro_text = db.Column(
+        db.Text,
+        nullable=False,
+        default="请认真阅读测评说明，客观、公正、独立完成本次民主测评。",
+    )
+    intro_seconds = db.Column(db.Integer, nullable=False, default=5)
     unit_id = db.Column(
         db.Integer,
         db.ForeignKey("units.id", ondelete="RESTRICT"),
@@ -173,6 +180,9 @@ class EvaluationForm(TimestampMixin, db.Model):
             "title": self.title,
             "description": self.description,
             "status": self.status,
+            "show_intro": self.show_intro,
+            "intro_text": self.intro_text,
+            "intro_seconds": self.intro_seconds,
             "unit_id": self.unit_id,
             "group_id": self.group_id,
             "period_id": self.period_id,
@@ -261,6 +271,7 @@ class FormItem(TimestampMixin, db.Model):
         nullable=False,
     )
     title = db.Column(db.String(240), nullable=False)
+    item_type = db.Column(db.String(20), nullable=False, default="choice")
     sort_order = db.Column(db.Integer, nullable=False, default=0)
 
     form = db.relationship("EvaluationForm", back_populates="items")
@@ -272,6 +283,7 @@ class FormItem(TimestampMixin, db.Model):
             "id": self.id,
             "section_id": self.section_id,
             "title": self.title,
+            "item_type": self.item_type,
             "sort_order": self.sort_order,
         }
         if include_section:
@@ -382,10 +394,11 @@ class SurveyAnswer(TimestampMixin, db.Model):
     option_id = db.Column(
         db.Integer,
         db.ForeignKey("form_options.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
     )
-    option_label = db.Column(db.String(80), nullable=False)
+    option_label = db.Column(db.String(80), nullable=False, default="")
     score_weight = db.Column(db.Integer, nullable=False, default=0)
+    text_value = db.Column(db.Text, nullable=False, default="")
 
     response = db.relationship("SurveyResponse", back_populates="answers")
     item = db.relationship("FormItem", back_populates="answers")
@@ -398,4 +411,5 @@ class SurveyAnswer(TimestampMixin, db.Model):
             "option_id": self.option_id,
             "option_label": self.option_label,
             "score_weight": self.score_weight,
+            "text_value": self.text_value,
         }

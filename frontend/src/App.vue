@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
   BarChart3,
   Building2,
@@ -33,9 +33,13 @@ const defaultSections = () => [
   {
     title: "政治建设",
     items: [
-      { title: "学习贯彻习近平新时代中国特色社会主义思想" },
-      { title: "贯彻落实习近平总书记关于石油工业和中国石油重要指示批示精神情况" },
-      { title: "贯彻党的路线方针政策情况、落实公司党委重大部署情况" },
+      { title: "学习贯彻习近平新时代中国特色社会主义思想", item_type: "choice" },
+      {
+        title: "贯彻落实习近平总书记关于石油工业和中国石油重要指示批示精神情况",
+        item_type: "choice",
+      },
+      { title: "贯彻党的路线方针政策情况、落实公司党委重大部署情况", item_type: "choice" },
+      { title: "请填写对本单位工作的意见建议", item_type: "text" },
     ],
   },
 ];
@@ -59,6 +63,7 @@ const selectedStatsFormId = ref("");
 const linksByForm = ref({});
 const newLinkTargets = ref({});
 const draggedLevelId = ref(null);
+const selectedQr = ref(null);
 
 const loginForm = ref({ username: "root", password: "root123" });
 const unitForm = ref({ name: "" });
@@ -80,6 +85,9 @@ const periodForm = ref({
 const emptyFormBuilder = () => ({
   title: "",
   description: "",
+  show_intro: true,
+  intro_text: "请认真阅读测评说明，客观、公正、独立完成本次民主测评。",
+  intro_seconds: 5,
   unit_id: "",
   group_id: "",
   period_id: "",
@@ -91,6 +99,9 @@ const formBuilder = ref(emptyFormBuilder());
 const survey = ref(null);
 const surveyAnswers = ref({});
 const surveySubmitted = ref(false);
+const introAcknowledged = ref(false);
+const introRemaining = ref(0);
+let introTimer = null;
 
 const isSurveyRoute = computed(() => route.value.startsWith("#/survey/"));
 const surveyToken = computed(() => route.value.replace("#/survey/", ""));
@@ -191,6 +202,30 @@ function logout() {
   selectedStats.value = null;
   message.value = "";
   error.value = "";
+}
+
+function clearIntroTimer() {
+  if (introTimer) {
+    window.clearInterval(introTimer);
+    introTimer = null;
+  }
+}
+
+function startIntroCountdown() {
+  clearIntroTimer();
+  introAcknowledged.value = !survey.value?.show_intro;
+  introRemaining.value = Math.max(0, Number(survey.value?.intro_seconds || 0));
+  if (introAcknowledged.value || introRemaining.value === 0) return;
+  introTimer = window.setInterval(() => {
+    introRemaining.value = Math.max(0, introRemaining.value - 1);
+    if (introRemaining.value === 0) clearIntroTimer();
+  }, 1000);
+}
+
+function acknowledgeIntro() {
+  if (introRemaining.value > 0) return;
+  introAcknowledged.value = true;
+  clearIntroTimer();
 }
 
 async function loadData() {
@@ -302,7 +337,10 @@ function removeOption(index) {
 }
 
 function addSection() {
-  formBuilder.value.sections.push({ title: "", items: [{ title: "" }] });
+  formBuilder.value.sections.push({
+    title: "",
+    items: [{ title: "", item_type: "choice" }],
+  });
 }
 
 function removeSection(index) {
@@ -311,7 +349,7 @@ function removeSection(index) {
 }
 
 function addSectionItem(section) {
-  section.items.push({ title: "" });
+  section.items.push({ title: "", item_type: "choice" });
 }
 
 function removeSectionItem(section, index) {
@@ -373,6 +411,22 @@ async function updateLink(link) {
   }, "目标人数已更新");
 }
 
+function qrTitle(form, link) {
+  return `${form.period.name} · ${form.unit.name} · ${form.title} · ${link.level.name}`;
+}
+
+function openQrModal(form, link) {
+  selectedQr.value = {
+    title: qrTitle(form, link),
+    token: link.token,
+    url: publicSurveyUrl(link.token),
+  };
+}
+
+function closeQrModal() {
+  selectedQr.value = null;
+}
+
 async function selectStats(formId) {
   selectedStatsFormId.value = formId;
   if (!formId) {
@@ -394,6 +448,7 @@ async function loadPublicSurvey() {
     survey.value = await api(`/public/surveys/${surveyToken.value}`);
     surveyAnswers.value = {};
     surveySubmitted.value = false;
+    startIntroCountdown();
   });
 }
 
@@ -403,7 +458,10 @@ function setSurveyAnswer(itemId, optionId) {
 
 const surveyComplete = computed(() => {
   if (!survey.value) return false;
-  return survey.value.items.every((item) => surveyAnswers.value[item.id]);
+  return survey.value.items.every((item) => {
+    const value = surveyAnswers.value[item.id];
+    return item.item_type === "text" ? String(value || "").trim() : value;
+  });
 });
 
 async function submitSurvey() {
@@ -419,6 +477,10 @@ async function submitSurvey() {
 window.addEventListener("hashchange", async () => {
   route.value = window.location.hash || "#/";
   if (isSurveyRoute.value) await loadPublicSurvey();
+});
+
+onBeforeUnmount(() => {
+  clearIntroTimer();
 });
 
 onMounted(async () => {
@@ -460,12 +522,32 @@ onMounted(async () => {
 
         <div v-if="!survey.is_open" class="notice warning">当前测评表不在填报时间内。</div>
 
+        <section v-else-if="!introAcknowledged" class="intro-panel">
+          <h2>测评告知事项</h2>
+          <p>{{ survey.intro_text }}</p>
+          <button
+            class="primary wide"
+            type="button"
+            :disabled="introRemaining > 0"
+            @click="acknowledgeIntro"
+          >
+            {{ introRemaining > 0 ? `${introRemaining} 秒后可开始` : "我已阅读，开始测评" }}
+          </button>
+        </section>
+
         <form v-else class="survey-form" @submit.prevent="submitSurvey">
           <section v-for="section in survey.sections" :key="section.id" class="survey-section">
             <h2>{{ section.title }}</h2>
             <div v-for="item in section.items" :key="item.id" class="survey-item">
               <div class="item-title">{{ item.sort_order }}. {{ item.title }}</div>
-              <div class="score-row">
+              <textarea
+                v-if="item.item_type === 'text'"
+                v-model="surveyAnswers[item.id]"
+                class="answer-textarea"
+                rows="5"
+                placeholder="请输入您的意见建议"
+              />
+              <div v-else class="score-row">
                 <button
                   v-for="option in survey.options"
                   :key="option.id"
@@ -580,6 +662,7 @@ onMounted(async () => {
               <tr>
                 <th>测评表</th>
                 <th>单位</th>
+                <th>时间任务</th>
                 <th>巡察组</th>
                 <th>进度</th>
                 <th>满意度</th>
@@ -590,6 +673,7 @@ onMounted(async () => {
               <tr v-for="item in overview" :key="item.id">
                 <td>{{ item.title }}</td>
                 <td>{{ item.unit.name }}</td>
+                <td>{{ item.period.name }}</td>
                 <td>{{ item.group.name }}</td>
                 <td>
                   {{ item.progress.response_count }}/{{ item.progress.target_count }}
@@ -853,6 +937,33 @@ onMounted(async () => {
               说明
               <textarea v-model="formBuilder.description" rows="3" />
             </label>
+            <div class="subpanel">
+              <div class="panel-head compact-head">
+                <h2>扫码告知事项</h2>
+              </div>
+              <label class="checkline">
+                <input v-model="formBuilder.show_intro" type="checkbox" />
+                开启填表前告知事项
+              </label>
+              <label>
+                告知内容
+                <textarea
+                  v-model="formBuilder.intro_text"
+                  rows="3"
+                  :disabled="!formBuilder.show_intro"
+                />
+              </label>
+              <label>
+                倒计时秒数
+                <input
+                  v-model.number="formBuilder.intro_seconds"
+                  type="number"
+                  min="0"
+                  max="60"
+                  :disabled="!formBuilder.show_intro"
+                />
+              </label>
+            </div>
             <div class="three-cols">
               <label>
                 单位
@@ -932,6 +1043,10 @@ onMounted(async () => {
                       {{ section.title || "测评维度" }}
                     </span>
                     <span class="merged-cell-label ghost-cell" v-else></span>
+                    <select v-model="item.item_type" class="item-type-select" title="测评项类型">
+                      <option value="choice">选择题</option>
+                      <option value="text">问答题</option>
+                    </select>
                     <input v-model="item.title" :placeholder="`测评项 ${itemIndex + 1}`" />
                     <button
                       class="icon"
@@ -963,7 +1078,7 @@ onMounted(async () => {
           <div class="record-list">
             <div v-for="item in forms" :key="item.id" class="form-record">
               <strong>{{ item.title }}</strong>
-              <span>{{ item.unit.name }} · {{ item.group.name }}</span>
+              <span>{{ item.period.name }} · {{ item.unit.name }} · {{ item.group.name }}</span>
               <small>
                 进度 {{ item.progress.response_count }}/{{ item.progress.target_count }}
               </small>
@@ -1024,8 +1139,8 @@ onMounted(async () => {
         <section v-for="form in forms" :key="form.id" class="panel">
           <div class="panel-head">
             <div>
-              <h2>{{ form.title }}</h2>
-              <p>{{ form.unit.name }} · {{ form.period.name }}</p>
+              <h2>{{ form.period.name }} · {{ form.title }}</h2>
+              <p>{{ form.unit.name }} · {{ form.group.name }}</p>
             </div>
           </div>
           <div class="level-actions">
@@ -1045,9 +1160,11 @@ onMounted(async () => {
           </div>
           <div class="qr-list">
             <div v-for="link in linksByForm[form.id] || []" :key="link.id" class="qr-item">
-              <img :src="qrUrl(link.token)" :alt="`${link.level.name}二维码`" />
+              <button class="qr-image-button" type="button" @click="openQrModal(form, link)">
+                <img :src="qrUrl(link.token)" :alt="`${qrTitle(form, link)}二维码`" />
+              </button>
               <div>
-                <strong>{{ link.level.name }}</strong>
+                <strong>{{ qrTitle(form, link) }}</strong>
                 <a :href="publicSurveyUrl(link.token)" target="_blank">
                   {{ publicSurveyUrl(link.token) }}
                 </a>
@@ -1072,7 +1189,7 @@ onMounted(async () => {
           <select v-model="selectedStatsFormId" @change="selectStats(selectedStatsFormId)">
             <option value="">选择测评表</option>
             <option v-for="item in forms" :key="item.id" :value="item.id">
-              {{ item.title }} · {{ item.unit.name }}
+              {{ item.period.name }} · {{ item.title }} · {{ item.unit.name }}
             </option>
           </select>
         </div>
@@ -1121,15 +1238,22 @@ onMounted(async () => {
               <div v-for="item in section.items" :key="item.item_id" class="stat-row item-stat">
                 <div>
                   <strong>{{ item.title }}</strong>
-                  <span>小项满意度 {{ item.summary.satisfaction_percent }}%</span>
+                  <span v-if="item.item_type === 'text'">问答题 · {{ item.text_count }} 条答复</span>
+                  <span v-else>小项满意度 {{ item.summary.satisfaction_percent }}%</span>
                 </div>
-                <div class="bar-track">
+                <div v-if="item.item_type !== 'text'" class="bar-track">
                   <div class="bar-fill" :style="{ width: `${item.summary.satisfaction_percent}%` }" />
                 </div>
-                <div class="count-grid dynamic">
+                <div v-if="item.item_type !== 'text'" class="count-grid dynamic">
                   <span v-for="option in item.summary.options" :key="option.option_id">
                     {{ option.label }} {{ option.count }}
                   </span>
+                </div>
+                <div v-else class="text-answer-list">
+                  <p v-for="answer in item.text_answers" :key="answer.answer_id">
+                    {{ answer.level?.name ? `${answer.level.name}：` : "" }}{{ answer.text }}
+                  </p>
+                  <span v-if="!item.text_answers.length" class="muted">暂无答复</span>
                 </div>
               </div>
             </section>
@@ -1183,11 +1307,18 @@ onMounted(async () => {
                     </div>
                     <div v-for="item in section.items" :key="item.item_id" class="level-item-detail">
                       <strong>{{ item.title }}</strong>
-                      <span>{{ item.summary.satisfaction_percent }}%</span>
-                      <div class="count-grid dynamic">
+                      <span v-if="item.item_type === 'text'">问答题 · {{ item.text_count }} 条答复</span>
+                      <span v-else>{{ item.summary.satisfaction_percent }}%</span>
+                      <div v-if="item.item_type !== 'text'" class="count-grid dynamic">
                         <span v-for="option in item.summary.options" :key="option.option_id">
                           {{ option.label }} {{ option.count }}
                         </span>
+                      </div>
+                      <div v-else class="text-answer-list">
+                        <p v-for="answer in item.text_answers" :key="answer.answer_id">
+                          {{ answer.text }}
+                        </p>
+                        <span v-if="!item.text_answers.length" class="muted">暂无答复</span>
                       </div>
                     </div>
                   </section>
@@ -1199,5 +1330,18 @@ onMounted(async () => {
         <div v-else class="empty-state">选择一张测评表查看任务进度、维度汇总和小项明细。</div>
       </section>
     </section>
+
+    <div v-if="selectedQr" class="modal-backdrop" @click.self="closeQrModal">
+      <section class="qr-modal">
+        <div class="panel-head">
+          <div>
+            <h2>{{ selectedQr.title }}</h2>
+            <p>{{ selectedQr.url }}</p>
+          </div>
+          <button class="ghost icon-text" type="button" @click="closeQrModal">关闭</button>
+        </div>
+        <img :src="qrUrl(selectedQr.token)" :alt="`${selectedQr.title}二维码`" />
+      </section>
+    </div>
   </main>
 </template>

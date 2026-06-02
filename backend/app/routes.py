@@ -178,13 +178,22 @@ def normalize_sections(data):
         raw_items = raw_section.get("items") or []
         items = []
         for item_index, raw_item in enumerate(raw_items, start=1):
-            item_title = (
-                str(raw_item.get("title", "")).strip()
-                if isinstance(raw_item, dict)
-                else str(raw_item).strip()
-            )
+            if isinstance(raw_item, dict):
+                item_title = str(raw_item.get("title", "")).strip()
+                item_type = str(raw_item.get("item_type") or "choice").strip()
+            else:
+                item_title = str(raw_item).strip()
+                item_type = "choice"
+            if item_type not in ("choice", "text"):
+                raise BadRequest("测评项类型不正确")
             if item_title:
-                items.append({"title": item_title, "sort_order": item_index})
+                items.append(
+                    {
+                        "title": item_title,
+                        "item_type": item_type,
+                        "sort_order": item_index,
+                    }
+                )
         if items:
             sections.append(
                 {
@@ -213,6 +222,21 @@ def apply_form_structure(form, data):
         form.sections.append(section)
 
 
+def apply_intro_settings(form, data):
+    form.show_intro = parse_bool(data.get("show_intro"), default=True)
+    form.intro_text = str(
+        data.get(
+            "intro_text",
+            "请认真阅读测评说明，客观、公正、独立完成本次民主测评。",
+        )
+    ).strip() or "请认真阅读测评说明，客观、公正、独立完成本次民主测评。"
+    try:
+        intro_seconds = int(data.get("intro_seconds") or 5)
+    except (TypeError, ValueError) as exc:
+        raise BadRequest("告知事项倒计时必须是数字") from exc
+    form.intro_seconds = max(0, min(60, intro_seconds))
+
+
 def distribution_for_items(form, item_ids, level_id=None):
     if not item_ids:
         return {
@@ -239,6 +263,7 @@ def distribution_for_items(form, item_ids, level_id=None):
         .join(SurveyLink)
         .filter(SurveyLink.form_id == form.id)
         .filter(SurveyAnswer.item_id.in_(item_ids))
+        .filter(SurveyAnswer.option_id.isnot(None))
     )
     if level_id is not None:
         rows = rows.filter(SurveyLink.level_id == level_id)
@@ -296,25 +321,65 @@ def form_progress(form):
 def section_stats_for_form(form, level_id=None):
     sections = []
     for section in form.sections:
-        section_item_ids = [item.id for item in section.items]
+        section_choice_item_ids = [
+            item.id for item in section.items if item.item_type == "choice"
+        ]
         sections.append(
             {
                 "section_id": section.id,
                 "title": section.title,
                 "sort_order": section.sort_order,
-                "summary": distribution_for_items(form, section_item_ids, level_id),
+                "summary": distribution_for_items(
+                    form,
+                    section_choice_item_ids,
+                    level_id,
+                ),
                 "items": [
-                    {
-                        "item_id": item.id,
-                        "title": item.title,
-                        "sort_order": item.sort_order,
-                        "summary": distribution_for_items(form, [item.id], level_id),
-                    }
+                    item_stats_payload(form, item, level_id)
                     for item in section.items
                 ],
             }
         )
     return sections
+
+
+def text_answers_for_item(form, item, level_id=None):
+    query = (
+        db.session.query(SurveyAnswer, SurveyResponse, SurveyLink)
+        .join(SurveyResponse, SurveyAnswer.response_id == SurveyResponse.id)
+        .join(SurveyLink, SurveyResponse.link_id == SurveyLink.id)
+        .filter(SurveyLink.form_id == form.id)
+        .filter(SurveyAnswer.item_id == item.id)
+        .filter(SurveyAnswer.text_value != "")
+    )
+    if level_id is not None:
+        query = query.filter(SurveyLink.level_id == level_id)
+    rows = query.order_by(SurveyResponse.submitted_at.desc()).all()
+    return [
+        {
+            "answer_id": answer.id,
+            "text": answer.text_value,
+            "submitted_at": response.submitted_at.isoformat(),
+            "level": link.level.to_dict() if link.level else None,
+        }
+        for answer, response, link in rows
+    ]
+
+
+def item_stats_payload(form, item, level_id=None):
+    payload = {
+        "item_id": item.id,
+        "title": item.title,
+        "item_type": item.item_type,
+        "sort_order": item.sort_order,
+    }
+    if item.item_type == "text":
+        payload["text_answers"] = text_answers_for_item(form, item, level_id)
+        payload["text_count"] = len(payload["text_answers"])
+        payload["summary"] = distribution_for_items(form, [], level_id)
+    else:
+        payload["summary"] = distribution_for_items(form, [item.id], level_id)
+    return payload
 
 
 def level_stats_for_form(form, all_item_ids):
@@ -332,7 +397,7 @@ def level_stats_for_form(form, all_item_ids):
 
 
 def form_stats_payload(form):
-    all_item_ids = [item.id for item in form.items]
+    all_item_ids = [item.id for item in form.items if item.item_type == "choice"]
     return {
         "form": form.to_dict(include_structure=False),
         "options": [option.to_dict() for option in form.options],
@@ -642,6 +707,7 @@ def create_form(_identity):
         group_id=require_int(data, "group_id"),
         period_id=require_int(data, "period_id"),
     )
+    apply_intro_settings(form, data)
     apply_form_structure(form, data)
     db.session.add(form)
     db.session.commit()
@@ -672,6 +738,7 @@ def update_form(_identity, form_id):
     form.unit_id = require_int(data, "unit_id")
     form.group_id = require_int(data, "group_id")
     form.period_id = require_int(data, "period_id")
+    apply_intro_settings(form, data)
     apply_form_structure(form, data)
     db.session.commit()
     return form.to_dict()
@@ -776,21 +843,28 @@ def submit_public_survey(token):
         respondent_note=str(data.get("respondent_note", "")).strip(),
     )
     for item in form.items:
-        try:
-            option_id = int(answers.get(str(item.id)) or answers.get(item.id))
-        except (TypeError, ValueError) as exc:
-            raise BadRequest("评分选项不正确") from exc
-        option = option_by_id.get(option_id)
-        if not option:
-            raise BadRequest("评分选项不正确")
-        response.answers.append(
-            SurveyAnswer(
-                item=item,
-                option=option,
-                option_label=option.label,
-                score_weight=option.score_weight,
+        answer_value = answers.get(str(item.id)) or answers.get(item.id)
+        if item.item_type == "text":
+            text_value = str(answer_value or "").strip()
+            if not text_value:
+                raise BadRequest("请完成所有问答题")
+            response.answers.append(SurveyAnswer(item=item, text_value=text_value))
+        else:
+            try:
+                option_id = int(answer_value)
+            except (TypeError, ValueError) as exc:
+                raise BadRequest("评分选项不正确") from exc
+            option = option_by_id.get(option_id)
+            if not option:
+                raise BadRequest("评分选项不正确")
+            response.answers.append(
+                SurveyAnswer(
+                    item=item,
+                    option=option,
+                    option_label=option.label,
+                    score_weight=option.score_weight,
+                )
             )
-        )
     db.session.add(response)
     db.session.commit()
     return {"ok": True, "response_id": response.id}, 201

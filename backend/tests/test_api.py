@@ -39,6 +39,9 @@ def create_base_task(client, headers):
         "/api/forms",
         json={
             "title": "民主测评表",
+            "show_intro": True,
+            "intro_text": "请阅读后开始测评",
+            "intro_seconds": 3,
             "unit_id": unit.get_json()["id"],
             "group_id": group.get_json()["id"],
             "period_id": period.get_json()["id"],
@@ -53,6 +56,7 @@ def create_base_task(client, headers):
                     "items": [
                         {"title": "学习贯彻习近平新时代中国特色社会主义思想"},
                         {"title": "落实公司党委重大部署情况"},
+                        {"title": "请填写对本单位的意见建议", "item_type": "text"},
                     ],
                 }
             ],
@@ -89,6 +93,8 @@ def test_root_to_public_survey_flow():
     assert survey.status_code == 200
     survey_json = survey.get_json()
     assert survey_json["is_open"] is True
+    assert survey_json["show_intro"] is True
+    assert survey_json["intro_seconds"] == 3
     assert survey_json["sections"][0]["title"] == "政治建设"
 
     first_option_id = survey_json["options"][0]["id"]
@@ -99,6 +105,7 @@ def test_root_to_public_survey_flow():
             "answers": {
                 str(survey_json["items"][0]["id"]): first_option_id,
                 str(survey_json["items"][1]["id"]): second_option_id,
+                str(survey_json["items"][2]["id"]): "继续保持",
             }
         },
     )
@@ -111,6 +118,9 @@ def test_root_to_public_survey_flow():
     assert stats_json["progress"]["target_count"] == 2
     assert stats_json["sections"][0]["summary"]["options"][0]["count"] == 1
     assert stats_json["sections"][0]["items"][0]["summary"]["options"][0]["count"] == 1
+    assert stats_json["sections"][0]["items"][2]["item_type"] == "text"
+    assert stats_json["sections"][0]["items"][2]["text_count"] == 1
+    assert stats_json["sections"][0]["items"][2]["text_answers"][0]["text"] == "继续保持"
     assert stats_json["levels"][0]["level"]["id"] == level_id
     assert stats_json["levels"][0]["progress"]["response_count"] == 1
     assert stats_json["levels"][0]["overall"]["options"][0]["count"] == 1
@@ -119,3 +129,5 @@ def test_root_to_public_survey_flow():
     assert unit_delete.status_code == 400
     group_delete = client.delete(f"/api/groups/{group['id']}", headers=headers)
     assert group_delete.status_code == 400
+    form_delete = client.delete(f"/api/forms/{form['id']}", headers=headers)
+    assert form_delete.status_code == 400

@@ -462,9 +462,13 @@ a {
 
 .item-edit-row {
   display: grid;
-  grid-template-columns: 140px minmax(0, 1fr) auto;
+  grid-template-columns: 140px 108px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: stretch;
+}
+
+.item-type-select {
+  min-width: 0;
 }
 
 .form-record {
@@ -585,7 +589,14 @@ a {
   padding: 12px;
 }
 
-.qr-item img {
+.qr-image-button {
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.qr-item img,
+.qr-modal img {
   width: 112px;
   height: 112px;
   border: 1px solid #e0e4e9;
@@ -623,6 +634,26 @@ a {
   font-size: 19px;
 }
 
+.intro-panel {
+  display: grid;
+  gap: 16px;
+  border: 1px solid #d5ebe3;
+  border-radius: 8px;
+  background: #f5faf8;
+  padding: 20px;
+}
+
+.intro-panel h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.intro-panel p {
+  margin: 0;
+  color: #3f4a45;
+  white-space: pre-wrap;
+}
+
 .item-title {
   font-weight: 700;
   margin-bottom: 12px;
@@ -647,6 +678,11 @@ a {
   background: #e8f4ef;
   color: #176f5b;
   font-weight: 700;
+}
+
+.answer-textarea {
+  min-height: 120px;
+  resize: vertical;
 }
 
 .done-state {
@@ -841,6 +877,44 @@ a {
   border-radius: 8px;
   background: #fff;
   padding: 10px;
+}
+
+.text-answer-list {
+  display: grid;
+  gap: 8px;
+}
+
+.text-answer-list p {
+  margin: 0;
+  border: 1px solid #edf0f3;
+  border-radius: 8px;
+  background: #fbfcfd;
+  padding: 10px;
+  color: #303740;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  background: rgba(32, 33, 36, 0.58);
+  padding: 20px;
+}
+
+.qr-modal {
+  width: min(100%, 520px);
+  border-radius: 8px;
+  background: #fff;
+  padding: 20px;
+}
+
+.qr-modal img {
+  display: block;
+  width: min(100%, 360px);
+  height: auto;
+  margin: 12px auto 0;
 }
 
 @media (max-width: 980px) {
