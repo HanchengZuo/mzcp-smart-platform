@@ -1012,13 +1012,32 @@ onMounted(async () => {
                   添加选项
                 </button>
               </div>
-              <div class="option-editor">
-                <div v-for="(option, index) in formBuilder.options" :key="index" class="option-row">
-                  <input v-model="option.label" placeholder="选项名称" />
-                  <input v-model.number="option.score_weight" type="number" placeholder="权重" />
-                  <button class="icon" type="button" title="删除选项" @click="removeOption(index)">
-                    <Trash2 :size="17" />
+              <div class="option-preview-panel">
+                <div class="score-row builder-score-row">
+                  <button
+                    v-for="(option, index) in formBuilder.options"
+                    :key="index"
+                    class="score-button option-preview-button"
+                    type="button"
+                  >
+                    <span>{{ option.label || `选项${index + 1}` }}</span>
+                    <small>{{ Number(option.score_weight || 0) }} 分</small>
                   </button>
+                </div>
+                <div class="option-editor">
+                  <article v-for="(option, index) in formBuilder.options" :key="index" class="option-card">
+                    <label>
+                      选项名称
+                      <input v-model="option.label" placeholder="满意" />
+                    </label>
+                    <label>
+                      统计权重
+                      <input v-model.number="option.score_weight" type="number" placeholder="100" />
+                    </label>
+                    <button class="icon" type="button" title="删除选项" @click="removeOption(index)">
+                      <Trash2 :size="17" />
+                    </button>
+                  </article>
                 </div>
               </div>
             </div>
@@ -1037,35 +1056,55 @@ onMounted(async () => {
                   :key="sectionIndex"
                   class="section-block"
                 >
-                  <div class="section-title-row">
+                  <div class="builder-section-head">
                     <FileText :size="18" />
-                    <input v-model="section.title" placeholder="例如：政治建设" />
+                    <input v-model="section.title" class="section-title-input" placeholder="例如：政治建设" />
                     <button class="icon" type="button" title="删除维度" @click="removeSection(sectionIndex)">
                       <Trash2 :size="17" />
                     </button>
                   </div>
-                  <div
-                    v-for="(item, itemIndex) in section.items"
-                    :key="itemIndex"
-                    class="item-edit-row"
-                  >
-                    <span class="merged-cell-label" v-if="itemIndex === 0">
-                      {{ section.title || "测评维度" }}
-                    </span>
-                    <span class="merged-cell-label ghost-cell" v-else></span>
-                    <select v-model="item.item_type" class="item-type-select" title="测评项类型">
-                      <option value="choice">选择题</option>
-                      <option value="text">问答题</option>
-                    </select>
-                    <input v-model="item.title" :placeholder="`测评项 ${itemIndex + 1}`" />
-                    <button
-                      class="icon"
-                      type="button"
-                      title="删除测评项"
-                      @click="removeSectionItem(section, itemIndex)"
+                  <div class="builder-survey-form">
+                    <article
+                      v-for="(item, itemIndex) in section.items"
+                      :key="itemIndex"
+                      class="survey-item builder-survey-item"
                     >
-                      <Trash2 :size="17" />
-                    </button>
+                      <div class="builder-item-toolbar">
+                        <select v-model="item.item_type" class="item-type-select" title="测评项类型">
+                          <option value="choice">选择题</option>
+                          <option value="text">问答题</option>
+                        </select>
+                        <button
+                          class="icon"
+                          type="button"
+                          title="删除测评项"
+                          @click="removeSectionItem(section, itemIndex)"
+                        >
+                          <Trash2 :size="17" />
+                        </button>
+                      </div>
+                      <label class="builder-item-title-field">
+                        <span>{{ itemIndex + 1 }}.</span>
+                        <input v-model="item.title" :placeholder="`测评项 ${itemIndex + 1}`" />
+                      </label>
+                      <div v-if="item.item_type !== 'text'" class="score-row builder-score-row">
+                        <button
+                          v-for="(option, optionIndex) in formBuilder.options"
+                          :key="optionIndex"
+                          class="score-button"
+                          type="button"
+                        >
+                          {{ option.label || `选项${optionIndex + 1}` }}
+                        </button>
+                      </div>
+                      <textarea
+                        v-else
+                        class="answer-textarea builder-answer-preview"
+                        rows="5"
+                        readonly
+                        placeholder="请输入您的意见建议"
+                      />
+                    </article>
                   </div>
                   <button class="ghost icon-text" type="button" @click="addSectionItem(section)">
                     <Plus :size="17" />

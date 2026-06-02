@@ -499,6 +499,43 @@ a {
   min-width: 0;
 }
 
+.option-preview-panel {
+  display: grid;
+  gap: 14px;
+  border: 1px solid #e0e4e9;
+  border-radius: 8px;
+  background: #fbfcfd;
+  padding: 14px;
+}
+
+.builder-score-row {
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+}
+
+.option-preview-button {
+  display: grid;
+  place-items: center;
+  gap: 2px;
+  min-height: 54px;
+  cursor: default;
+}
+
+.option-preview-button small {
+  color: #6d7580;
+  font-size: 12px;
+}
+
+.option-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px auto;
+  gap: 10px;
+  align-items: end;
+  border: 1px solid #edf0f3;
+  border-radius: 8px;
+  background: #fff;
+  padding: 12px;
+}
+
 .form-record {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -689,7 +726,7 @@ a {
 
 .score-row {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 10px;
 }
 
@@ -764,17 +801,71 @@ a {
 
 .section-block {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   border: 1px solid #e0e4e9;
   border-radius: 8px;
-  padding: 12px;
+  background: #fff;
+  padding: 14px;
 }
 
-.section-title-row {
+.builder-section-head {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
+  border-bottom: 1px solid #edf0f3;
+  padding-bottom: 12px;
+}
+
+.section-title-input {
+  border-color: transparent;
+  background: #f5faf8;
+  color: #176f5b;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.builder-survey-form {
+  display: grid;
+  gap: 12px;
+}
+
+.builder-survey-item {
+  display: grid;
+  gap: 12px;
+  background: #fff;
+}
+
+.builder-survey-item .score-button {
+  cursor: default;
+}
+
+.builder-item-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.builder-item-toolbar .item-type-select {
+  width: 116px;
+}
+
+.builder-item-title-field {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  color: #202124;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.builder-item-title-field input {
+  border-color: transparent;
+  background: #fbfcfd;
+  font-weight: 700;
+}
+
+.builder-answer-preview {
+  color: #7b8491;
 }
 
 .merged-cell-label {
@@ -1087,6 +1178,7 @@ a {
   .qr-item,
   .count-grid,
   .option-row,
+  .option-card,
   .item-edit-row,
   .target-create,
   .record-row.draggable {
