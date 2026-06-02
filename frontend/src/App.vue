@@ -88,7 +88,7 @@ const emptyFormBuilder = () => ({
   show_intro: true,
   intro_text: "请认真阅读测评说明，客观、公正、独立完成本次民主测评。",
   intro_seconds: 5,
-  unit_id: "",
+  unit_ids: [],
   group_id: "",
   period_id: "",
   options: defaultOptions(),
@@ -373,6 +373,14 @@ async function deleteItem(resource, id, successText) {
     await api(`/${resource}/${id}`, { method: "DELETE" });
     await loadData();
   }, successText);
+}
+
+async function deleteForm(item) {
+  const confirmed = window.confirm(
+    `确定删除「${item.title}」吗？相关二维码、进度和已提交测评数据都会同步删除。`,
+  );
+  if (!confirmed) return;
+  await deleteItem("forms", item.id, "测评表及相关数据已删除");
 }
 
 async function loadLinks(formId) {
@@ -964,15 +972,17 @@ onMounted(async () => {
                 />
               </label>
             </div>
-            <div class="three-cols">
-              <label>
+            <div class="assignment-grid">
+              <label class="unit-picker-field">
                 单位
-                <select v-model="formBuilder.unit_id">
-                  <option disabled value="">选择单位</option>
-                  <option v-for="item in units" :key="item.id" :value="item.id">
+                <div class="unit-multi-picker">
+                  <label v-for="item in units" :key="item.id" class="checkline option-check">
+                    <input v-model="formBuilder.unit_ids" type="checkbox" :value="item.id" />
                     {{ item.name }}
-                  </option>
-                </select>
+                  </label>
+                  <span v-if="!units.length" class="muted">请先创建单位</span>
+                </div>
+                <small>已选择 {{ formBuilder.unit_ids.length }} 个单位，每个单位会生成一张测评表。</small>
               </label>
               <label>
                 巡察组
@@ -1091,8 +1101,7 @@ onMounted(async () => {
                   class="icon danger"
                   title="删除"
                   type="button"
-                  :disabled="item.progress.response_count > 0"
-                  @click="deleteItem('forms', item.id, '测评表已删除')"
+                  @click="deleteForm(item)"
                 >
                   <Trash2 :size="17" />
                 </button>

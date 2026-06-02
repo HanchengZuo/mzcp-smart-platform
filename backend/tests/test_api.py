@@ -130,4 +130,73 @@ def test_root_to_public_survey_flow():
     group_delete = client.delete(f"/api/groups/{group['id']}", headers=headers)
     assert group_delete.status_code == 400
     form_delete = client.delete(f"/api/forms/{form['id']}", headers=headers)
-    assert form_delete.status_code == 400
+    assert form_delete.status_code == 200
+    assert client.get(f"/api/public/surveys/{token}").status_code == 404
+    assert client.get(f"/api/stats/forms/{form['id']}", headers=headers).status_code == 404
+
+
+def test_create_form_with_multiple_units():
+    app = create_app(
+        {
+            "TESTING": True,
+            "SQLALCHEMY_DATABASE_URI": "sqlite:///:memory:",
+            "JWT_SECRET": "test-secret",
+        }
+    )
+    client = app.test_client()
+    headers = auth_headers(client)
+
+    first_unit = client.post("/api/units", json={"name": "第一单位"}, headers=headers)
+    second_unit = client.post("/api/units", json={"name": "第二单位"}, headers=headers)
+    assert first_unit.status_code == 201
+    assert second_unit.status_code == 201
+
+    group = client.post(
+        "/api/groups",
+        json={"name": "第一巡察组", "username": "group1", "password": "pass123"},
+        headers=headers,
+    )
+    period = client.post(
+        "/api/periods",
+        json={
+            "name": "2026年下半年",
+            "year": 2026,
+            "half": "下半年",
+            "starts_on": "2026-07-01",
+            "ends_on": "2026-12-31",
+        },
+        headers=headers,
+    )
+    assert group.status_code == 201
+    assert period.status_code == 201
+
+    response = client.post(
+        "/api/forms",
+        json={
+            "title": "同名民主测评表",
+            "unit_ids": [
+                first_unit.get_json()["id"],
+                second_unit.get_json()["id"],
+            ],
+            "group_id": group.get_json()["id"],
+            "period_id": period.get_json()["id"],
+            "sections": [
+                {
+                    "title": "综合测评",
+                    "items": [{"title": "履职情况"}],
+                }
+            ],
+        },
+        headers=headers,
+    )
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload["created_count"] == 2
+    assert {item["unit_id"] for item in payload["items"]} == {
+        first_unit.get_json()["id"],
+        second_unit.get_json()["id"],
+    }
+
+    forms = client.get("/api/forms", headers=headers).get_json()["items"]
+    assert len(forms) == 2
+    assert {item["unit"]["name"] for item in forms} == {"第一单位", "第二单位"}

@@ -134,6 +134,75 @@ def form_has_responses(form):
     )
 
 
+def parse_unit_ids(data):
+    raw_unit_ids = data.get("unit_ids")
+    if raw_unit_ids is None:
+        return [require_int(data, "unit_id")]
+    if not isinstance(raw_unit_ids, list):
+        raise BadRequest("请选择测评单位")
+
+    unit_ids = []
+    for raw_unit_id in raw_unit_ids:
+        try:
+            unit_id = int(raw_unit_id)
+        except (TypeError, ValueError) as exc:
+            raise BadRequest("请选择测评单位") from exc
+        if unit_id not in unit_ids:
+            unit_ids.append(unit_id)
+    if not unit_ids:
+        raise BadRequest("请至少选择一个测评单位")
+
+    existing_ids = {
+        unit.id for unit in Unit.query.filter(Unit.id.in_(unit_ids)).all()
+    }
+    if set(unit_ids) != existing_ids:
+        raise NotFound("unit not found")
+    return unit_ids
+
+
+def build_form_from_data(data, unit_id):
+    form = EvaluationForm(
+        title=require_text(data, "title"),
+        description=str(data.get("description", "")).strip(),
+        status=str(data.get("status", "active")).strip() or "active",
+        unit_id=unit_id,
+        group_id=require_int(data, "group_id"),
+        period_id=require_int(data, "period_id"),
+    )
+    apply_intro_settings(form, data)
+    apply_form_structure(form, data)
+    return form
+
+
+def delete_form_with_related_data(form):
+    item_ids = [
+        item_id
+        for (item_id,) in db.session.query(FormItem.id)
+        .filter(FormItem.form_id == form.id)
+        .all()
+    ]
+    if item_ids:
+        SurveyAnswer.query.filter(SurveyAnswer.item_id.in_(item_ids)).delete(
+            synchronize_session=False,
+        )
+
+    link_ids = [
+        link_id
+        for (link_id,) in db.session.query(SurveyLink.id)
+        .filter(SurveyLink.form_id == form.id)
+        .all()
+    ]
+    if link_ids:
+        SurveyResponse.query.filter(SurveyResponse.link_id.in_(link_ids)).delete(
+            synchronize_session=False,
+        )
+        SurveyLink.query.filter(SurveyLink.id.in_(link_ids)).delete(
+            synchronize_session=False,
+        )
+
+    db.session.delete(form)
+
+
 def normalize_options(raw_options):
     source = raw_options or DEFAULT_FORM_OPTIONS
     options = []
@@ -699,19 +768,15 @@ def list_forms(identity):
 @auth_required("root")
 def create_form(_identity):
     data = parse_json()
-    form = EvaluationForm(
-        title=require_text(data, "title"),
-        description=str(data.get("description", "")).strip(),
-        status=str(data.get("status", "active")).strip() or "active",
-        unit_id=require_int(data, "unit_id"),
-        group_id=require_int(data, "group_id"),
-        period_id=require_int(data, "period_id"),
-    )
-    apply_intro_settings(form, data)
-    apply_form_structure(form, data)
-    db.session.add(form)
+    forms = [build_form_from_data(data, unit_id) for unit_id in parse_unit_ids(data)]
+    db.session.add_all(forms)
     db.session.commit()
-    return form.to_dict(), 201
+    if len(forms) == 1:
+        return forms[0].to_dict(), 201
+    return {
+        "created_count": len(forms),
+        "items": [form.to_dict() for form in forms],
+    }, 201
 
 
 @api.get("/forms/<int:form_id>")
@@ -748,9 +813,7 @@ def update_form(_identity, form_id):
 @auth_required("root")
 def delete_form(_identity, form_id):
     form = get_form_or_404(form_id)
-    if form_has_responses(form):
-        raise BadRequest("已有答卷的测评表不能删除")
-    db.session.delete(form)
+    delete_form_with_related_data(form)
     db.session.commit()
     return {"ok": True}
 
