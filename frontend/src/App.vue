@@ -1,6 +1,8 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
+  ArrowDown,
+  ArrowUp,
   BarChart3,
   Building2,
   CalendarRange,
@@ -94,7 +96,7 @@ const emptyFormBuilder = () => ({
 });
 const formBuilder = ref(emptyFormBuilder());
 const emptyTaskBuilder = () => ({
-  template_id: "",
+  template_ids: [],
   unit_ids: [],
   group_id: "",
   period_id: "",
@@ -104,6 +106,7 @@ const taskBuilder = ref(emptyTaskBuilder());
 const survey = ref(null);
 const surveyAnswers = ref({});
 const surveySubmitted = ref(false);
+const currentSurveyFormIndex = ref(0);
 const introAcknowledged = ref(false);
 const introRemaining = ref(0);
 let introTimer = null;
@@ -138,10 +141,20 @@ const summary = computed(() => [
   { label: "表单模板", value: templates.value.length, tone: "blue" },
   {
     label: "已提交/目标",
-    value: `${overview.value.reduce((sum, item) => sum + item.progress.response_count, 0)}/${overview.value.reduce((sum, item) => sum + item.progress.target_count, 0)}`,
+    value: `${tasks.value.reduce((sum, item) => sum + item.progress.response_count, 0)}/${tasks.value.reduce((sum, item) => sum + item.progress.target_count, 0)}`,
     tone: "gray",
   },
 ]);
+
+const selectedTaskTemplates = computed(() =>
+  taskBuilder.value.template_ids
+    .map((templateId) => templates.value.find((item) => item.id === Number(templateId)))
+    .filter(Boolean),
+);
+
+const surveyForms = computed(() => survey.value?.forms?.length ? survey.value.forms : survey.value ? [survey.value] : []);
+const currentSurveyForm = computed(() => surveyForms.value[currentSurveyFormIndex.value] || null);
+const isLastSurveyForm = computed(() => currentSurveyFormIndex.value >= surveyForms.value.length - 1);
 
 const publicSurveyUrl = (token) => `${window.location.origin}/#/survey/${token}`;
 const qrUrl = (token) =>
@@ -255,7 +268,7 @@ async function loadData() {
         api("/templates"),
         api("/forms"),
         api("/stats/overview"),
-        api("/tasks/progress"),
+        api("/tasks"),
       ]);
     units.value = unitData.items;
     levels.value = levelData.items;
@@ -271,14 +284,14 @@ async function loadData() {
       api("/periods"),
       api("/forms"),
       api("/stats/overview"),
-      api("/tasks/progress"),
+      api("/tasks"),
     ]);
     levels.value = levelData.items;
     periods.value = periodData.items;
     forms.value = formData.items;
     overview.value = statData.items;
     tasks.value = taskData.items;
-    await Promise.all(forms.value.map((form) => loadLinks(form.id)));
+    await Promise.all(tasks.value.map((task) => loadLinks(task.id)));
   }
 }
 
@@ -374,6 +387,15 @@ function removeSectionItem(section, index) {
   section.items.splice(index, 1);
 }
 
+function moveTaskTemplate(index, direction) {
+  const target = index + direction;
+  if (target < 0 || target >= taskBuilder.value.template_ids.length) return;
+  const next = [...taskBuilder.value.template_ids];
+  const [moved] = next.splice(index, 1);
+  next.splice(target, 0, moved);
+  taskBuilder.value.template_ids = next;
+}
+
 async function createEvaluationForm() {
   await run(async () => {
     await api("/templates", {
@@ -417,19 +439,27 @@ async function deleteForm(item) {
   await deleteItem("forms", item.id, "测评任务及相关数据已删除");
 }
 
-async function loadLinks(formId) {
-  const data = await api(`/forms/${formId}/links`);
-  linksByForm.value = { ...linksByForm.value, [formId]: data.items };
+async function deleteTask(item) {
+  const confirmed = window.confirm(
+    `确定删除任务「${item.title}」吗？相关二维码、进度和已提交测评数据都会同步删除。`,
+  );
+  if (!confirmed) return;
+  await deleteItem("tasks", item.id, "测评任务及相关数据已删除");
 }
 
-function linkTargetKey(formId, levelId) {
-  return `${formId}-${levelId}`;
+async function loadLinks(taskId) {
+  const data = await api(`/tasks/${taskId}/links`);
+  linksByForm.value = { ...linksByForm.value, [taskId]: data.items };
 }
 
-async function generateLink(formId, levelId) {
-  const key = linkTargetKey(formId, levelId);
+function linkTargetKey(taskId, levelId) {
+  return `${taskId}-${levelId}`;
+}
+
+async function generateLink(taskId, levelId) {
+  const key = linkTargetKey(taskId, levelId);
   await run(async () => {
-    await api(`/forms/${formId}/links`, {
+    await api(`/tasks/${taskId}/links`, {
       method: "POST",
       body: JSON.stringify({
         level_id: levelId,
@@ -437,7 +467,7 @@ async function generateLink(formId, levelId) {
       }),
     });
     newLinkTargets.value[key] = "";
-    await loadLinks(formId);
+    await loadLinks(taskId);
     await loadData();
   }, "二维码链接已生成");
 }
@@ -448,18 +478,18 @@ async function updateLink(link) {
       method: "PUT",
       body: JSON.stringify(link),
     });
-    await loadLinks(link.form_id);
+    await loadLinks(link.task_id || link.form_id);
     await loadData();
   }, "目标人数已更新");
 }
 
-function qrTitle(form, link) {
-  return `${form.period.name} · ${form.unit.name} · ${form.title} · ${link.level.name}`;
+function qrTitle(task, link) {
+  return `${task.period.name} · ${task.unit.name} · ${task.title} · ${link.level.name}`;
 }
 
-function openQrModal(form, link) {
+function openQrModal(task, link) {
   selectedQr.value = {
-    title: qrTitle(form, link),
+    title: qrTitle(task, link),
     token: link.token,
     url: publicSurveyUrl(link.token),
   };
@@ -490,6 +520,7 @@ async function loadPublicSurvey() {
     survey.value = await api(`/public/surveys/${surveyToken.value}`);
     surveyAnswers.value = {};
     surveySubmitted.value = false;
+    currentSurveyFormIndex.value = 0;
     startIntroCountdown();
   });
 }
@@ -500,11 +531,25 @@ function setSurveyAnswer(itemId, optionId) {
 
 const surveyComplete = computed(() => {
   if (!survey.value) return false;
-  return survey.value.items.every((item) => {
+  return surveyForms.value.every((form) => form.items.every((item) => {
+    const value = surveyAnswers.value[item.id];
+    return item.item_type === "text" ? String(value || "").trim() : value;
+  }));
+});
+
+const currentSurveyFormComplete = computed(() => {
+  const form = currentSurveyForm.value;
+  if (!form) return false;
+  return form.items.every((item) => {
     const value = surveyAnswers.value[item.id];
     return item.item_type === "text" ? String(value || "").trim() : value;
   });
 });
+
+function nextSurveyForm() {
+  if (!currentSurveyFormComplete.value || isLastSurveyForm.value) return;
+  currentSurveyFormIndex.value += 1;
+}
 
 async function submitSurvey() {
   await run(async () => {
@@ -560,7 +605,10 @@ onMounted(async () => {
       <div v-if="survey && !surveySubmitted" class="survey-content">
         <p class="eyebrow">{{ survey.unit.name }} · {{ survey.level.name }}</p>
         <h1>{{ survey.title }}</h1>
-        <p class="muted">{{ survey.period.name }}</p>
+        <p class="muted">
+          {{ survey.period.name }}
+          <span v-if="surveyForms.length > 1"> · 共 {{ surveyForms.length }} 张表单</span>
+        </p>
 
         <div v-if="!survey.is_open" class="notice warning">当前测评表不在填报时间内。</div>
 
@@ -578,7 +626,20 @@ onMounted(async () => {
         </section>
 
         <form v-else class="survey-form" @submit.prevent="submitSurvey">
-          <section v-for="section in survey.sections" :key="section.id" class="survey-section">
+          <div v-if="surveyForms.length > 1" class="survey-sequence">
+            <span
+              v-for="(form, index) in surveyForms"
+              :key="form.id"
+              :class="{ active: index === currentSurveyFormIndex }"
+            >
+              {{ index + 1 }}. {{ form.title }}
+            </span>
+          </div>
+          <div v-if="currentSurveyForm" class="current-form-head">
+            <span>第 {{ currentSurveyFormIndex + 1 }} / {{ surveyForms.length }} 张</span>
+            <h2>{{ currentSurveyForm.title }}</h2>
+          </div>
+          <section v-for="section in currentSurveyForm?.sections || []" :key="section.id" class="survey-section">
             <h2>{{ section.title }}</h2>
             <div v-for="item in section.items" :key="item.id" class="survey-item">
               <div class="item-title">{{ item.sort_order }}. {{ item.title }}</div>
@@ -591,7 +652,7 @@ onMounted(async () => {
               />
               <div v-else class="score-row">
                 <button
-                  v-for="option in survey.options"
+                  v-for="option in currentSurveyForm.options"
                   :key="option.id"
                   type="button"
                   class="score-button"
@@ -603,9 +664,18 @@ onMounted(async () => {
               </div>
             </div>
           </section>
-          <button class="primary wide" type="submit" :disabled="!surveyComplete">
+          <button
+            v-if="!isLastSurveyForm"
+            class="primary wide"
+            type="button"
+            :disabled="!currentSurveyFormComplete"
+            @click="nextSurveyForm"
+          >
+            下一张表
+          </button>
+          <button v-else class="primary wide" type="submit" :disabled="!surveyComplete">
             <Save :size="18" />
-            提交测评
+            提交全部测评
           </button>
         </form>
       </div>
@@ -1164,14 +1234,34 @@ onMounted(async () => {
                   v-for="item in templates"
                   :key="item.id"
                   class="template-choice-card"
-                  :class="{ selected: Number(taskBuilder.template_id) === item.id }"
+                  :class="{ selected: taskBuilder.template_ids.map(Number).includes(item.id) }"
                 >
-                  <input v-model="taskBuilder.template_id" type="radio" :value="item.id" />
+                  <input v-model="taskBuilder.template_ids" type="checkbox" :value="item.id" />
                   <strong>{{ item.title }}</strong>
                   <span>{{ item.description || "未填写说明" }}</span>
                   <small>{{ item.sections.length }} 个维度 · {{ item.items.length }} 个测评项</small>
                 </label>
                 <div v-if="!templates.length" class="empty-state">请先创建测评表单模板。</div>
+              </div>
+            </div>
+
+            <div v-if="selectedTaskTemplates.length" class="subpanel">
+              <div class="panel-head compact-head">
+                <h2>答题顺序</h2>
+              </div>
+              <div class="template-order-list">
+                <article v-for="(item, index) in selectedTaskTemplates" :key="item.id" class="template-order-item">
+                  <span>{{ index + 1 }}</span>
+                  <strong>{{ item.title }}</strong>
+                  <div class="order-actions">
+                    <button class="icon" type="button" title="上移" :disabled="index === 0" @click="moveTaskTemplate(index, -1)">
+                      <ArrowUp :size="16" />
+                    </button>
+                    <button class="icon" type="button" title="下移" :disabled="index === selectedTaskTemplates.length - 1" @click="moveTaskTemplate(index, 1)">
+                      <ArrowDown :size="16" />
+                    </button>
+                  </div>
+                </article>
               </div>
             </div>
 
@@ -1185,7 +1275,7 @@ onMounted(async () => {
                   </label>
                   <span v-if="!units.length" class="muted">请先创建单位</span>
                 </div>
-                <small>已选择 {{ taskBuilder.unit_ids.length }} 个单位，每个单位会发起一个任务。</small>
+                <small>已选择 {{ taskBuilder.unit_ids.length }} 个单位，每个单位会发起一个任务包。</small>
               </label>
               <label>
                 巡察组
@@ -1218,14 +1308,14 @@ onMounted(async () => {
             <h2>已发起任务</h2>
           </div>
           <div class="record-list">
-            <div v-for="item in forms" :key="item.id" class="form-record">
+            <div v-for="item in tasks" :key="item.id" class="form-record">
               <strong>{{ item.title }}</strong>
               <span>{{ item.period.name }} · {{ item.unit.name }} · {{ item.group.name }}</span>
               <small>
-                模板 {{ item.template?.title || "已删除模板" }} · 进度 {{ item.progress.response_count }}/{{ item.progress.target_count }}
+                {{ item.forms.map((form) => form.title).join(" → ") }} · 进度 {{ item.progress.response_count }}/{{ item.progress.target_count }}
               </small>
               <div class="record-actions">
-                <button class="ghost icon-text" type="button" @click="viewStats(item.id)">
+                <button class="ghost icon-text" type="button" @click="viewStats(item.forms[0].id)">
                   <Eye :size="17" />
                   数据
                 </button>
@@ -1233,7 +1323,7 @@ onMounted(async () => {
                   class="icon danger"
                   title="删除"
                   type="button"
-                  @click="deleteForm(item)"
+                  @click="deleteTask(item)"
                 >
                   <Trash2 :size="17" />
                 </button>
@@ -1277,35 +1367,36 @@ onMounted(async () => {
       </section>
 
       <section v-if="active === 'links'" class="links-grid">
-        <section v-for="form in forms" :key="form.id" class="panel">
+        <section v-for="task in tasks" :key="task.id" class="panel">
           <div class="panel-head">
             <div>
-              <h2>{{ form.period.name }} · {{ form.title }}</h2>
-              <p>{{ form.unit.name }} · {{ form.group.name }}</p>
+              <h2>{{ task.period.name }} · {{ task.title }}</h2>
+              <p>{{ task.unit.name }} · {{ task.group.name }}</p>
+              <p v-if="task.forms.length > 1">{{ task.forms.map((form) => form.title).join(" → ") }}</p>
             </div>
           </div>
           <div class="level-actions">
             <div v-for="level in levels" :key="level.id" class="target-create">
               <span>{{ level.name }}</span>
               <input
-                v-model.number="newLinkTargets[linkTargetKey(form.id, level.id)]"
+                v-model.number="newLinkTargets[linkTargetKey(task.id, level.id)]"
                 type="number"
                 min="0"
                 placeholder="目标人数"
               />
-              <button class="ghost icon-text" type="button" @click="generateLink(form.id, level.id)">
+              <button class="ghost icon-text" type="button" @click="generateLink(task.id, level.id)">
                 <QrCode :size="17" />
                 生成
               </button>
             </div>
           </div>
           <div class="qr-list">
-            <div v-for="link in linksByForm[form.id] || []" :key="link.id" class="qr-item">
-              <button class="qr-image-button" type="button" @click="openQrModal(form, link)">
-                <img :src="qrUrl(link.token)" :alt="`${qrTitle(form, link)}二维码`" />
+            <div v-for="link in linksByForm[task.id] || []" :key="link.id" class="qr-item">
+              <button class="qr-image-button" type="button" @click="openQrModal(task, link)">
+                <img :src="qrUrl(link.token)" :alt="`${qrTitle(task, link)}二维码`" />
               </button>
               <div>
-                <strong>{{ qrTitle(form, link) }}</strong>
+                <strong>{{ qrTitle(task, link) }}</strong>
                 <a :href="publicSurveyUrl(link.token)" target="_blank">
                   {{ publicSurveyUrl(link.token) }}
                 </a>

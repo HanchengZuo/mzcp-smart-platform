@@ -29,6 +29,7 @@ class Unit(TimestampMixin, db.Model):
     name = db.Column(db.String(120), unique=True, nullable=False)
 
     forms = db.relationship("EvaluationForm", back_populates="unit")
+    tasks = db.relationship("EvaluationTask", back_populates="unit")
 
     def to_dict(self):
         return {
@@ -69,6 +70,7 @@ class InspectionGroup(TimestampMixin, db.Model):
     enabled = db.Column(db.Boolean, nullable=False, default=True)
 
     forms = db.relationship("EvaluationForm", back_populates="group")
+    tasks = db.relationship("EvaluationTask", back_populates="group")
 
     def set_password(self, password):
         self.password_plain = password
@@ -104,6 +106,7 @@ class PeriodTask(TimestampMixin, db.Model):
     ends_on = db.Column(db.Date, nullable=False)
 
     forms = db.relationship("EvaluationForm", back_populates="period")
+    tasks = db.relationship("EvaluationTask", back_populates="period")
 
     def to_dict(self):
         return {
@@ -168,6 +171,64 @@ class FormTemplate(TimestampMixin, db.Model):
         return payload
 
 
+class EvaluationTask(TimestampMixin, db.Model):
+    __tablename__ = "evaluation_tasks"
+
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(200), nullable=False)
+    status = db.Column(db.String(20), nullable=False, default="active")
+    unit_id = db.Column(
+        db.Integer,
+        db.ForeignKey("units.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    group_id = db.Column(
+        db.Integer,
+        db.ForeignKey("inspection_groups.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    period_id = db.Column(
+        db.Integer,
+        db.ForeignKey("period_tasks.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    unit = db.relationship("Unit", back_populates="tasks")
+    group = db.relationship("InspectionGroup", back_populates="tasks")
+    period = db.relationship("PeriodTask", back_populates="tasks")
+    forms = db.relationship(
+        "EvaluationForm",
+        back_populates="task",
+        cascade="all, delete-orphan",
+        order_by="EvaluationForm.form_order",
+    )
+    links = db.relationship(
+        "SurveyLink",
+        back_populates="task",
+        cascade="all, delete-orphan",
+    )
+
+    def to_dict(self, include_forms=True):
+        payload = {
+            "id": self.id,
+            "title": self.title,
+            "status": self.status,
+            "unit_id": self.unit_id,
+            "group_id": self.group_id,
+            "period_id": self.period_id,
+            "unit": self.unit.to_dict() if self.unit else None,
+            "group": self.group.to_dict(include_password=False) if self.group else None,
+            "period": self.period.to_dict() if self.period else None,
+            "form_count": len(self.forms),
+        }
+        if include_forms:
+            payload["forms"] = [
+                form.to_dict(include_structure=False)
+                for form in self.forms
+            ]
+        return payload
+
+
 class EvaluationForm(TimestampMixin, db.Model):
     __tablename__ = "evaluation_forms"
 
@@ -177,6 +238,12 @@ class EvaluationForm(TimestampMixin, db.Model):
         db.ForeignKey("form_templates.id", ondelete="SET NULL"),
         nullable=True,
     )
+    task_id = db.Column(
+        db.Integer,
+        db.ForeignKey("evaluation_tasks.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    form_order = db.Column(db.Integer, nullable=False, default=1)
     title = db.Column(db.String(160), nullable=False)
     description = db.Column(db.Text, nullable=False, default="")
     status = db.Column(db.String(20), nullable=False, default="active")
@@ -204,6 +271,7 @@ class EvaluationForm(TimestampMixin, db.Model):
     )
 
     template = db.relationship("FormTemplate", back_populates="tasks")
+    task = db.relationship("EvaluationTask", back_populates="forms")
     unit = db.relationship("Unit", back_populates="forms")
     group = db.relationship("InspectionGroup", back_populates="forms")
     period = db.relationship("PeriodTask", back_populates="forms")
@@ -235,6 +303,8 @@ class EvaluationForm(TimestampMixin, db.Model):
         payload = {
             "id": self.id,
             "template_id": self.template_id,
+            "task_id": self.task_id,
+            "form_order": self.form_order,
             "title": self.title,
             "description": self.description,
             "status": self.status,
@@ -252,6 +322,7 @@ class EvaluationForm(TimestampMixin, db.Model):
                 if self.template
                 else None
             ),
+            "task": self.task.to_dict(include_forms=False) if self.task else None,
         }
         if include_structure:
             payload["options"] = [option.to_dict() for option in self.options]
@@ -464,7 +535,10 @@ class FormItem(TimestampMixin, db.Model):
 
 class SurveyLink(TimestampMixin, db.Model):
     __tablename__ = "survey_links"
-    __table_args__ = (db.UniqueConstraint("form_id", "level_id", name="uq_form_level"),)
+    __table_args__ = (
+        db.UniqueConstraint("form_id", "level_id", name="uq_form_level"),
+        db.UniqueConstraint("task_id", "level_id", name="uq_task_level"),
+    )
 
     id = db.Column(db.Integer, primary_key=True)
     token = db.Column(db.String(64), unique=True, nullable=False, index=True)
@@ -472,6 +546,11 @@ class SurveyLink(TimestampMixin, db.Model):
         db.Integer,
         db.ForeignKey("evaluation_forms.id", ondelete="CASCADE"),
         nullable=False,
+    )
+    task_id = db.Column(
+        db.Integer,
+        db.ForeignKey("evaluation_tasks.id", ondelete="CASCADE"),
+        nullable=True,
     )
     level_id = db.Column(
         db.Integer,
@@ -482,6 +561,7 @@ class SurveyLink(TimestampMixin, db.Model):
     active = db.Column(db.Boolean, nullable=False, default=True)
 
     form = db.relationship("EvaluationForm", back_populates="links")
+    task = db.relationship("EvaluationTask", back_populates="links")
     level = db.relationship("PersonLevel", back_populates="links")
     responses = db.relationship(
         "SurveyResponse",
@@ -500,6 +580,7 @@ class SurveyLink(TimestampMixin, db.Model):
             "id": self.id,
             "token": self.token,
             "form_id": self.form_id,
+            "task_id": self.task_id,
             "level_id": self.level_id,
             "level": self.level.to_dict() if self.level else None,
             "target_count": self.target_count,

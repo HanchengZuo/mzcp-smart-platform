@@ -35,7 +35,7 @@ def create_base_task(client, headers):
     )
     assert period.status_code == 201
 
-    template = client.post(
+    first_template = client.post(
         "/api/templates",
         json={
             "title": "民主测评表",
@@ -63,21 +63,44 @@ def create_base_task(client, headers):
         },
         headers=headers,
     )
-    assert template.status_code == 201
+    assert first_template.status_code == 201
 
-    form = client.post(
+    second_template = client.post(
+        "/api/templates",
+        json={
+            "title": "补充问卷",
+            "sections": [
+                {
+                    "title": "补充测评",
+                    "items": [
+                        {"title": "协同配合情况"},
+                    ],
+                }
+            ],
+        },
+        headers=headers,
+    )
+    assert second_template.status_code == 201
+
+    task = client.post(
         "/api/forms",
         json={
-            "template_id": template.get_json()["id"],
+            "template_ids": [
+                first_template.get_json()["id"],
+                second_template.get_json()["id"],
+            ],
             "unit_id": unit.get_json()["id"],
             "group_id": group.get_json()["id"],
             "period_id": period.get_json()["id"],
         },
         headers=headers,
     )
-    assert form.status_code == 201
-    assert form.get_json()["template_id"] == template.get_json()["id"]
-    return unit.get_json(), group.get_json(), period.get_json(), form.get_json()
+    assert task.status_code == 201
+    task_json = task.get_json()
+    assert len(task_json["forms"]) == 2
+    assert [form["form_order"] for form in task_json["forms"]] == [1, 2]
+    assert task_json["forms"][0]["template_id"] == first_template.get_json()["id"]
+    return unit.get_json(), group.get_json(), period.get_json(), task_json
 
 
 def test_root_to_public_survey_flow():
@@ -90,12 +113,14 @@ def test_root_to_public_survey_flow():
     )
     client = app.test_client()
     headers = auth_headers(client)
-    unit, group, _period, form = create_base_task(client, headers)
+    unit, group, _period, task = create_base_task(client, headers)
+    first_form = task["forms"][0]
+    second_form = task["forms"][1]
     level_id = client.get("/api/levels", headers=headers).get_json()["items"][0]["id"]
 
     group_headers = auth_headers(client, "group1", "pass123")
     link = client.post(
-        f"/api/forms/{form['id']}/links",
+        f"/api/tasks/{task['id']}/links",
         json={"level_id": level_id, "target_count": 2},
         headers=group_headers,
     )
@@ -108,23 +133,41 @@ def test_root_to_public_survey_flow():
     assert survey_json["is_open"] is True
     assert survey_json["show_intro"] is True
     assert survey_json["intro_seconds"] == 3
-    assert survey_json["sections"][0]["title"] == "政治建设"
+    assert len(survey_json["forms"]) == 2
+    assert [form["title"] for form in survey_json["forms"]] == ["民主测评表", "补充问卷"]
+    assert survey_json["forms"][0]["sections"][0]["title"] == "政治建设"
 
-    first_option_id = survey_json["options"][0]["id"]
-    second_option_id = survey_json["options"][1]["id"]
+    first_form_json = survey_json["forms"][0]
+    second_form_json = survey_json["forms"][1]
+    first_option_id = first_form_json["options"][0]["id"]
+    second_option_id = first_form_json["options"][1]["id"]
+    third_option_id = second_form_json["options"][0]["id"]
+    invalid_response = client.post(
+        f"/api/public/surveys/{token}/responses",
+        json={
+            "answers": {
+                str(first_form_json["items"][0]["id"]): first_option_id,
+                str(first_form_json["items"][1]["id"]): second_option_id,
+                str(first_form_json["items"][2]["id"]): "继续保持",
+                str(second_form_json["items"][0]["id"]): first_option_id,
+            }
+        },
+    )
+    assert invalid_response.status_code == 400
     response = client.post(
         f"/api/public/surveys/{token}/responses",
         json={
             "answers": {
-                str(survey_json["items"][0]["id"]): first_option_id,
-                str(survey_json["items"][1]["id"]): second_option_id,
-                str(survey_json["items"][2]["id"]): "继续保持",
+                str(first_form_json["items"][0]["id"]): first_option_id,
+                str(first_form_json["items"][1]["id"]): second_option_id,
+                str(first_form_json["items"][2]["id"]): "继续保持",
+                str(second_form_json["items"][0]["id"]): third_option_id,
             }
         },
     )
     assert response.status_code == 201
 
-    stats = client.get(f"/api/stats/forms/{form['id']}", headers=headers)
+    stats = client.get(f"/api/stats/forms/{first_form['id']}", headers=headers)
     assert stats.status_code == 200
     stats_json = stats.get_json()
     assert stats_json["progress"]["response_count"] == 1
@@ -137,15 +180,18 @@ def test_root_to_public_survey_flow():
     assert stats_json["levels"][0]["level"]["id"] == level_id
     assert stats_json["levels"][0]["progress"]["response_count"] == 1
     assert stats_json["levels"][0]["overall"]["options"][0]["count"] == 1
+    second_stats = client.get(f"/api/stats/forms/{second_form['id']}", headers=headers)
+    assert second_stats.status_code == 200
+    assert second_stats.get_json()["overall"]["options"][0]["count"] == 1
 
     unit_delete = client.delete(f"/api/units/{unit['id']}", headers=headers)
     assert unit_delete.status_code == 400
     group_delete = client.delete(f"/api/groups/{group['id']}", headers=headers)
     assert group_delete.status_code == 400
-    form_delete = client.delete(f"/api/forms/{form['id']}", headers=headers)
-    assert form_delete.status_code == 200
+    task_delete = client.delete(f"/api/tasks/{task['id']}", headers=headers)
+    assert task_delete.status_code == 200
     assert client.get(f"/api/public/surveys/{token}").status_code == 404
-    assert client.get(f"/api/stats/forms/{form['id']}", headers=headers).status_code == 404
+    assert client.get(f"/api/stats/forms/{first_form['id']}", headers=headers).status_code == 404
 
 
 def test_create_form_with_multiple_units():
@@ -201,7 +247,7 @@ def test_create_form_with_multiple_units():
     response = client.post(
         "/api/forms",
         json={
-            "template_id": template.get_json()["id"],
+            "template_ids": [template.get_json()["id"]],
             "unit_ids": [
                 first_unit.get_json()["id"],
                 second_unit.get_json()["id"],
@@ -214,6 +260,7 @@ def test_create_form_with_multiple_units():
     assert response.status_code == 201
     payload = response.get_json()
     assert payload["created_count"] == 2
+    assert len(payload["tasks"]) == 2
     assert {item["template_id"] for item in payload["items"]} == {
         template.get_json()["id"]
     }

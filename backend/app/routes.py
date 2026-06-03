@@ -13,6 +13,7 @@ from .extensions import db
 from .models import (
     DEFAULT_FORM_OPTIONS,
     EvaluationForm,
+    EvaluationTask,
     FormTemplate,
     FormItem,
     FormOption,
@@ -122,6 +123,13 @@ def get_form_or_404(form_id):
     return form
 
 
+def get_task_or_404(task_id):
+    task = db.session.get(EvaluationTask, task_id)
+    if not task:
+        raise NotFound("task not found")
+    return task
+
+
 def get_template_or_404(template_id):
     template = db.session.get(FormTemplate, template_id)
     if not template:
@@ -136,13 +144,47 @@ def ensure_group_can_access_form(identity, form):
         raise Forbidden("permission denied")
 
 
+def ensure_group_can_access_task(identity, task):
+    if identity.get("role") == "root":
+        return
+    if task.group_id != identity["group"].id:
+        raise Forbidden("permission denied")
+
+
 def form_has_responses(form):
-    return (
-        SurveyResponse.query.join(SurveyLink)
-        .filter(SurveyLink.form_id == form.id)
-        .first()
-        is not None
-    )
+    query = SurveyResponse.query.join(SurveyLink)
+    if form.task_id:
+        query = query.filter(SurveyLink.task_id == form.task_id)
+    else:
+        query = query.filter(SurveyLink.form_id == form.id)
+    return query.first() is not None
+
+
+def parse_template_ids(data):
+    raw_template_ids = data.get("template_ids")
+    if raw_template_ids is None:
+        raw_template_ids = [data.get("template_id")]
+    if not isinstance(raw_template_ids, list):
+        raise BadRequest("请选择测评表单模板")
+
+    template_ids = []
+    for raw_template_id in raw_template_ids:
+        try:
+            template_id = int(raw_template_id)
+        except (TypeError, ValueError) as exc:
+            raise BadRequest("请选择测评表单模板") from exc
+        if template_id not in template_ids:
+            template_ids.append(template_id)
+    if not template_ids:
+        raise BadRequest("请至少选择一个测评表单模板")
+
+    templates = {
+        template.id: template
+        for template in FormTemplate.query.filter(FormTemplate.id.in_(template_ids)).all()
+    }
+    if set(template_ids) != set(templates.keys()):
+        raise NotFound("template not found")
+    return [templates[template_id] for template_id in template_ids]
 
 
 def parse_unit_ids(data):
@@ -224,9 +266,27 @@ def copy_template_structure_to_form(template, form):
         form.sections.append(section)
 
 
-def build_form_from_template(template, data, unit_id):
+def task_title_for_templates(templates):
+    return " / ".join(template.title for template in templates)
+
+
+def build_task_from_templates(templates, data, unit_id):
+    task = EvaluationTask(
+        title=task_title_for_templates(templates),
+        status=str(data.get("status", "active")).strip() or "active",
+        unit_id=unit_id,
+        group_id=require_int(data, "group_id"),
+        period_id=require_int(data, "period_id"),
+    )
+    for index, template in enumerate(templates, start=1):
+        task.forms.append(build_form_from_template(template, data, unit_id, index))
+    return task
+
+
+def build_form_from_template(template, data, unit_id, form_order=1):
     form = EvaluationForm(
         template_id=template.id,
+        form_order=form_order,
         title=template.title,
         description=template.description,
         status=str(data.get("status", "active")).strip() or "active",
@@ -282,6 +342,36 @@ def delete_form_with_related_data(form):
         )
 
     db.session.delete(form)
+
+
+def delete_task_with_related_data(task):
+    item_ids = [
+        item_id
+        for (item_id,) in db.session.query(FormItem.id)
+        .join(EvaluationForm)
+        .filter(EvaluationForm.task_id == task.id)
+        .all()
+    ]
+    if item_ids:
+        SurveyAnswer.query.filter(SurveyAnswer.item_id.in_(item_ids)).delete(
+            synchronize_session=False,
+        )
+
+    link_ids = [
+        link_id
+        for (link_id,) in db.session.query(SurveyLink.id)
+        .filter(SurveyLink.task_id == task.id)
+        .all()
+    ]
+    if link_ids:
+        SurveyResponse.query.filter(SurveyResponse.link_id.in_(link_ids)).delete(
+            synchronize_session=False,
+        )
+        SurveyLink.query.filter(SurveyLink.id.in_(link_ids)).delete(
+            synchronize_session=False,
+        )
+
+    db.session.delete(task)
 
 
 def normalize_options(raw_options):
@@ -411,10 +501,13 @@ def distribution_for_items(form, item_ids, level_id=None):
         )
         .join(SurveyResponse)
         .join(SurveyLink)
-        .filter(SurveyLink.form_id == form.id)
         .filter(SurveyAnswer.item_id.in_(item_ids))
         .filter(SurveyAnswer.option_id.isnot(None))
     )
+    if form.task_id:
+        rows = rows.filter(SurveyLink.task_id == form.task_id)
+    else:
+        rows = rows.filter(SurveyLink.form_id == form.id)
     if level_id is not None:
         rows = rows.filter(SurveyLink.level_id == level_id)
     rows = rows.group_by(SurveyAnswer.option_id, SurveyAnswer.option_label).all()
@@ -453,7 +546,8 @@ def distribution_for_items(form, item_ids, level_id=None):
 
 
 def form_progress(form):
-    links = [link.to_dict() for link in form.links]
+    source_links = form.task.links if form.task else form.links
+    links = [link.to_dict() for link in source_links]
     response_count = sum(link["response_count"] for link in links)
     target_count = sum(link["target_count"] for link in links)
     completion_percent = (
@@ -498,10 +592,13 @@ def text_answers_for_item(form, item, level_id=None):
         db.session.query(SurveyAnswer, SurveyResponse, SurveyLink)
         .join(SurveyResponse, SurveyAnswer.response_id == SurveyResponse.id)
         .join(SurveyLink, SurveyResponse.link_id == SurveyLink.id)
-        .filter(SurveyLink.form_id == form.id)
         .filter(SurveyAnswer.item_id == item.id)
         .filter(SurveyAnswer.text_value != "")
     )
+    if form.task_id:
+        query = query.filter(SurveyLink.task_id == form.task_id)
+    else:
+        query = query.filter(SurveyLink.form_id == form.id)
     if level_id is not None:
         query = query.filter(SurveyLink.level_id == level_id)
     rows = query.order_by(SurveyResponse.submitted_at.desc()).all()
@@ -534,7 +631,8 @@ def item_stats_payload(form, item, level_id=None):
 
 def level_stats_for_form(form, all_item_ids):
     stats = []
-    for link in sorted(form.links, key=lambda item: item.level.sort_order if item.level else 0):
+    source_links = form.task.links if form.task else form.links
+    for link in sorted(source_links, key=lambda item: item.level.sort_order if item.level else 0):
         stats.append(
             {
                 "level": link.level.to_dict() if link.level else None,
@@ -555,6 +653,29 @@ def form_stats_payload(form):
         "progress": form_progress(form),
         "sections": section_stats_for_form(form),
         "levels": level_stats_for_form(form, all_item_ids),
+    }
+
+
+def task_progress_payload(task):
+    links = [link.to_dict() for link in task.links]
+    response_count = sum(link["response_count"] for link in links)
+    target_count = sum(link["target_count"] for link in links)
+    completion_percent = (
+        round(response_count / target_count * 100, 2) if target_count else 0
+    )
+    return {
+        "link_count": len(links),
+        "target_count": target_count,
+        "response_count": response_count,
+        "completion_percent": completion_percent,
+        "links": links,
+    }
+
+
+def task_payload(task):
+    return {
+        **task.to_dict(include_forms=True),
+        "progress": task_progress_payload(task),
     }
 
 
@@ -886,7 +1007,10 @@ def list_forms(identity):
     query = EvaluationForm.query
     if identity["role"] == "group":
         query = query.filter_by(group_id=identity["group"].id)
-    forms = query.order_by(EvaluationForm.created_at.desc()).all()
+    forms = query.order_by(
+        EvaluationForm.created_at.desc(),
+        EvaluationForm.form_order,
+    ).all()
     return {
         "items": [
             {
@@ -902,26 +1026,52 @@ def list_forms(identity):
 @auth_required("root")
 def create_form(_identity):
     data = parse_json()
-    template_id = data.get("template_id")
-    if template_id:
-        try:
-            template = get_template_or_404(int(template_id))
-        except (TypeError, ValueError) as exc:
-            raise BadRequest("请选择测评表单模板") from exc
-        forms = [
-            build_form_from_template(template, data, unit_id)
+    if data.get("template_id") or data.get("template_ids"):
+        templates = parse_template_ids(data)
+        tasks = [
+            build_task_from_templates(templates, data, unit_id)
             for unit_id in parse_unit_ids(data)
         ]
+        db.session.add_all(tasks)
+        db.session.commit()
+        forms = [form for task in tasks for form in task.forms]
+        if len(tasks) == 1:
+            return task_payload(tasks[0]), 201
+        return {
+            "created_count": len(tasks),
+            "tasks": [task_payload(task) for task in tasks],
+            "items": [form.to_dict() for form in forms],
+        }, 201
+
     else:
         forms = [build_form_from_data(data, unit_id) for unit_id in parse_unit_ids(data)]
-    db.session.add_all(forms)
+        db.session.add_all(forms)
+        db.session.commit()
+        if len(forms) == 1:
+            return forms[0].to_dict(), 201
+        return {
+            "created_count": len(forms),
+            "items": [form.to_dict() for form in forms],
+        }, 201
+
+
+@api.get("/tasks")
+@auth_required("root", "group")
+def list_evaluation_tasks(identity):
+    query = EvaluationTask.query
+    if identity["role"] == "group":
+        query = query.filter_by(group_id=identity["group"].id)
+    tasks = query.order_by(EvaluationTask.created_at.desc()).all()
+    return {"items": [task_payload(task) for task in tasks]}
+
+
+@api.delete("/tasks/<int:task_id>")
+@auth_required("root")
+def delete_evaluation_task(_identity, task_id):
+    task = get_task_or_404(task_id)
+    delete_task_with_related_data(task)
     db.session.commit()
-    if len(forms) == 1:
-        return forms[0].to_dict(), 201
-    return {
-        "created_count": len(forms),
-        "items": [form.to_dict() for form in forms],
-    }, 201
+    return {"ok": True}
 
 
 @api.get("/forms/<int:form_id>")
@@ -958,7 +1108,10 @@ def update_form(_identity, form_id):
 @auth_required("root")
 def delete_form(_identity, form_id):
     form = get_form_or_404(form_id)
-    delete_form_with_related_data(form)
+    if form.task and len(form.task.forms) == 1:
+        delete_task_with_related_data(form.task)
+    else:
+        delete_form_with_related_data(form)
     db.session.commit()
     return {"ok": True}
 
@@ -968,6 +1121,8 @@ def delete_form(_identity, form_id):
 def list_links(identity, form_id):
     form = get_form_or_404(form_id)
     ensure_group_can_access_form(identity, form)
+    if form.task:
+        return {"items": [link.to_dict() for link in form.task.links]}
     return {"items": [link.to_dict() for link in form.links]}
 
 
@@ -976,13 +1131,56 @@ def list_links(identity, form_id):
 def create_link(identity, form_id):
     form = get_form_or_404(form_id)
     ensure_group_can_access_form(identity, form)
+    task = form.task
     data = parse_json()
     level = db.session.get(PersonLevel, require_int(data, "level_id"))
     if not level:
         raise NotFound("level not found")
-    link = SurveyLink.query.filter_by(form_id=form.id, level_id=level.id).first()
+    if task:
+        link = SurveyLink.query.filter_by(task_id=task.id, level_id=level.id).first()
+    else:
+        link = SurveyLink.query.filter_by(form_id=form.id, level_id=level.id).first()
     if not link:
-        link = SurveyLink(form=form, level=level, token=token_urlsafe(24))
+        link = SurveyLink(
+            form=task.forms[0] if task else form,
+            task=task,
+            level=level,
+            token=token_urlsafe(24),
+        )
+        db.session.add(link)
+    link.target_count = max(0, int(data.get("target_count") or link.target_count or 0))
+    link.active = True
+    db.session.commit()
+    return link.to_dict(), 201
+
+
+@api.get("/tasks/<int:task_id>/links")
+@auth_required("root", "group")
+def list_task_links(identity, task_id):
+    task = get_task_or_404(task_id)
+    ensure_group_can_access_task(identity, task)
+    return {"items": [link.to_dict() for link in task.links]}
+
+
+@api.post("/tasks/<int:task_id>/links")
+@auth_required("root", "group")
+def create_task_link(identity, task_id):
+    task = get_task_or_404(task_id)
+    ensure_group_can_access_task(identity, task)
+    if not task.forms:
+        raise BadRequest("该任务没有测评表")
+    data = parse_json()
+    level = db.session.get(PersonLevel, require_int(data, "level_id"))
+    if not level:
+        raise NotFound("level not found")
+    link = SurveyLink.query.filter_by(task_id=task.id, level_id=level.id).first()
+    if not link:
+        link = SurveyLink(
+            form=task.forms[0],
+            task=task,
+            level=level,
+            token=token_urlsafe(24),
+        )
         db.session.add(link)
     link.target_count = max(0, int(data.get("target_count") or link.target_count or 0))
     link.active = True
@@ -996,7 +1194,10 @@ def update_link(identity, link_id):
     link = db.session.get(SurveyLink, link_id)
     if not link:
         raise NotFound("link not found")
-    ensure_group_can_access_form(identity, link.form)
+    if link.task:
+        ensure_group_can_access_task(identity, link.task)
+    else:
+        ensure_group_can_access_form(identity, link.form)
     data = parse_json()
     link.target_count = max(0, int(data.get("target_count") or 0))
     link.active = parse_bool(data.get("active"), default=True)
@@ -1004,18 +1205,30 @@ def update_link(identity, link_id):
     return link.to_dict()
 
 
+def forms_for_link(link):
+    if link.task:
+        return list(link.task.forms)
+    return [link.form]
+
+
 @api.get("/public/surveys/<token>")
 def get_public_survey(token):
     link = SurveyLink.query.filter_by(token=token, active=True).first()
     if not link:
         raise NotFound("survey not found")
-    form = link.form
+    forms = forms_for_link(link)
+    if not forms:
+        raise NotFound("survey not found")
+    form = forms[0]
     today = date.today()
     is_open = (
-        form.status == "active"
+        all(item.status == "active" for item in forms)
         and form.period.starts_on <= today <= form.period.ends_on
     )
     payload = form.to_dict()
+    payload["title"] = link.task.title if link.task else form.title
+    payload["forms"] = [item.to_dict() for item in forms]
+    payload["task"] = link.task.to_dict(include_forms=False) if link.task else None
     payload["level"] = link.level.to_dict()
     payload["token"] = link.token
     payload["is_open"] = is_open
@@ -1028,16 +1241,24 @@ def submit_public_survey(token):
     link = SurveyLink.query.filter_by(token=token, active=True).first()
     if not link:
         raise NotFound("survey not found")
-    form = link.form
+    forms = forms_for_link(link)
+    if not forms:
+        raise NotFound("survey not found")
+    form = forms[0]
     today = date.today()
-    if form.status != "active" or today < form.period.starts_on or today > form.period.ends_on:
+    if (
+        any(item.status != "active" for item in forms)
+        or today < form.period.starts_on
+        or today > form.period.ends_on
+    ):
         raise BadRequest("测评表不在填报时间内")
 
     data = parse_json()
     answers = data.get("answers") or {}
     if not isinstance(answers, dict):
         raise BadRequest("请完成所有题项")
-    item_ids = {item.id for item in form.items}
+    all_items = [item for current_form in forms for item in current_form.items]
+    item_ids = {item.id for item in all_items}
     try:
         answered_item_ids = {int(item_id) for item_id in answers.keys()}
     except (TypeError, ValueError) as exc:
@@ -1045,12 +1266,15 @@ def submit_public_survey(token):
     if answered_item_ids != item_ids:
         raise BadRequest("请完成所有题项")
 
-    option_by_id = {option.id: option for option in form.options}
+    options_by_form_id = {
+        current_form.id: {option.id: option for option in current_form.options}
+        for current_form in forms
+    }
     response = SurveyResponse(
         link=link,
         respondent_note=str(data.get("respondent_note", "")).strip(),
     )
-    for item in form.items:
+    for item in all_items:
         answer_value = answers.get(str(item.id)) or answers.get(item.id)
         if item.item_type == "text":
             text_value = str(answer_value or "").strip()
@@ -1062,7 +1286,7 @@ def submit_public_survey(token):
                 option_id = int(answer_value)
             except (TypeError, ValueError) as exc:
                 raise BadRequest("评分选项不正确") from exc
-            option = option_by_id.get(option_id)
+            option = options_by_form_id.get(item.form_id, {}).get(option_id)
             if not option:
                 raise BadRequest("评分选项不正确")
             response.answers.append(
