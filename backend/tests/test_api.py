@@ -35,8 +35,8 @@ def create_base_task(client, headers):
     )
     assert period.status_code == 201
 
-    form = client.post(
-        "/api/forms",
+    template = client.post(
+        "/api/templates",
         json={
             "title": "民主测评表",
             "show_intro": True,
@@ -63,7 +63,20 @@ def create_base_task(client, headers):
         },
         headers=headers,
     )
+    assert template.status_code == 201
+
+    form = client.post(
+        "/api/forms",
+        json={
+            "template_id": template.get_json()["id"],
+            "unit_id": unit.get_json()["id"],
+            "group_id": group.get_json()["id"],
+            "period_id": period.get_json()["id"],
+        },
+        headers=headers,
+    )
     assert form.status_code == 201
+    assert form.get_json()["template_id"] == template.get_json()["id"]
     return unit.get_json(), group.get_json(), period.get_json(), form.get_json()
 
 
@@ -170,16 +183,10 @@ def test_create_form_with_multiple_units():
     assert group.status_code == 201
     assert period.status_code == 201
 
-    response = client.post(
-        "/api/forms",
+    template = client.post(
+        "/api/templates",
         json={
             "title": "同名民主测评表",
-            "unit_ids": [
-                first_unit.get_json()["id"],
-                second_unit.get_json()["id"],
-            ],
-            "group_id": group.get_json()["id"],
-            "period_id": period.get_json()["id"],
             "sections": [
                 {
                     "title": "综合测评",
@@ -189,9 +196,27 @@ def test_create_form_with_multiple_units():
         },
         headers=headers,
     )
+    assert template.status_code == 201
+
+    response = client.post(
+        "/api/forms",
+        json={
+            "template_id": template.get_json()["id"],
+            "unit_ids": [
+                first_unit.get_json()["id"],
+                second_unit.get_json()["id"],
+            ],
+            "group_id": group.get_json()["id"],
+            "period_id": period.get_json()["id"],
+        },
+        headers=headers,
+    )
     assert response.status_code == 201
     payload = response.get_json()
     assert payload["created_count"] == 2
+    assert {item["template_id"] for item in payload["items"]} == {
+        template.get_json()["id"]
+    }
     assert {item["unit_id"] for item in payload["items"]} == {
         first_unit.get_json()["id"],
         second_unit.get_json()["id"],

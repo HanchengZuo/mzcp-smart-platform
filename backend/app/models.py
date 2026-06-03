@@ -117,10 +117,66 @@ class PeriodTask(TimestampMixin, db.Model):
         }
 
 
+class FormTemplate(TimestampMixin, db.Model):
+    __tablename__ = "form_templates"
+
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(160), nullable=False)
+    description = db.Column(db.Text, nullable=False, default="")
+    show_intro = db.Column(db.Boolean, nullable=False, default=True)
+    intro_text = db.Column(
+        db.Text,
+        nullable=False,
+        default="请认真阅读测评说明，客观、公正、独立完成本次民主测评。",
+    )
+    intro_seconds = db.Column(db.Integer, nullable=False, default=5)
+
+    tasks = db.relationship("EvaluationForm", back_populates="template")
+    options = db.relationship(
+        "TemplateOption",
+        back_populates="template",
+        cascade="all, delete-orphan",
+        order_by="TemplateOption.sort_order",
+    )
+    sections = db.relationship(
+        "TemplateSection",
+        back_populates="template",
+        cascade="all, delete-orphan",
+        order_by="TemplateSection.sort_order",
+    )
+    items = db.relationship(
+        "TemplateItem",
+        back_populates="template",
+        cascade="all, delete-orphan",
+        order_by="TemplateItem.sort_order",
+    )
+
+    def to_dict(self, include_structure=True):
+        payload = {
+            "id": self.id,
+            "title": self.title,
+            "description": self.description,
+            "show_intro": self.show_intro,
+            "intro_text": self.intro_text,
+            "intro_seconds": self.intro_seconds,
+            "task_count": len(self.tasks),
+        }
+        if include_structure:
+            payload["options"] = [option.to_dict() for option in self.options]
+            payload["sections"] = [section.to_dict() for section in self.sections]
+            payload["items"] = [item.to_dict() for item in self.items]
+        return payload
+
+
 class EvaluationForm(TimestampMixin, db.Model):
     __tablename__ = "evaluation_forms"
 
     id = db.Column(db.Integer, primary_key=True)
+    template_id = db.Column(
+        db.Integer,
+        db.ForeignKey("form_templates.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     title = db.Column(db.String(160), nullable=False)
     description = db.Column(db.Text, nullable=False, default="")
     status = db.Column(db.String(20), nullable=False, default="active")
@@ -147,6 +203,7 @@ class EvaluationForm(TimestampMixin, db.Model):
         nullable=False,
     )
 
+    template = db.relationship("FormTemplate", back_populates="tasks")
     unit = db.relationship("Unit", back_populates="forms")
     group = db.relationship("InspectionGroup", back_populates="forms")
     period = db.relationship("PeriodTask", back_populates="forms")
@@ -177,6 +234,7 @@ class EvaluationForm(TimestampMixin, db.Model):
     def to_dict(self, include_structure=True):
         payload = {
             "id": self.id,
+            "template_id": self.template_id,
             "title": self.title,
             "description": self.description,
             "status": self.status,
@@ -189,12 +247,46 @@ class EvaluationForm(TimestampMixin, db.Model):
             "unit": self.unit.to_dict() if self.unit else None,
             "group": self.group.to_dict(include_password=False) if self.group else None,
             "period": self.period.to_dict() if self.period else None,
+            "template": (
+                self.template.to_dict(include_structure=False)
+                if self.template
+                else None
+            ),
         }
         if include_structure:
             payload["options"] = [option.to_dict() for option in self.options]
             payload["sections"] = [section.to_dict() for section in self.sections]
             payload["items"] = [item.to_dict() for item in self.items]
         return payload
+
+
+class TemplateOption(TimestampMixin, db.Model):
+    __tablename__ = "template_options"
+    __table_args__ = (
+        db.UniqueConstraint("template_id", "value", name="uq_template_option_value"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    template_id = db.Column(
+        db.Integer,
+        db.ForeignKey("form_templates.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    label = db.Column(db.String(80), nullable=False)
+    value = db.Column(db.String(80), nullable=False)
+    score_weight = db.Column(db.Integer, nullable=False, default=0)
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+
+    template = db.relationship("FormTemplate", back_populates="options")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "label": self.label,
+            "value": self.value,
+            "score_weight": self.score_weight,
+            "sort_order": self.sort_order,
+        }
 
 
 class FormOption(TimestampMixin, db.Model):
@@ -227,6 +319,35 @@ class FormOption(TimestampMixin, db.Model):
         }
 
 
+class TemplateSection(TimestampMixin, db.Model):
+    __tablename__ = "template_sections"
+
+    id = db.Column(db.Integer, primary_key=True)
+    template_id = db.Column(
+        db.Integer,
+        db.ForeignKey("form_templates.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    title = db.Column(db.String(160), nullable=False)
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+
+    template = db.relationship("FormTemplate", back_populates="sections")
+    items = db.relationship(
+        "TemplateItem",
+        back_populates="section",
+        cascade="all, delete-orphan",
+        order_by="TemplateItem.sort_order",
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "title": self.title,
+            "sort_order": self.sort_order,
+            "items": [item.to_dict(include_section=False) for item in self.items],
+        }
+
+
 class FormSection(TimestampMixin, db.Model):
     __tablename__ = "form_sections"
 
@@ -254,6 +375,48 @@ class FormSection(TimestampMixin, db.Model):
             "sort_order": self.sort_order,
             "items": [item.to_dict(include_section=False) for item in self.items],
         }
+
+
+class TemplateItem(TimestampMixin, db.Model):
+    __tablename__ = "template_items"
+
+    id = db.Column(db.Integer, primary_key=True)
+    template_id = db.Column(
+        db.Integer,
+        db.ForeignKey("form_templates.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    section_id = db.Column(
+        db.Integer,
+        db.ForeignKey("template_sections.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    title = db.Column(db.String(240), nullable=False)
+    item_type = db.Column(db.String(20), nullable=False, default="choice")
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+
+    template = db.relationship("FormTemplate", back_populates="items")
+    section = db.relationship("TemplateSection", back_populates="items")
+
+    def to_dict(self, include_section=True):
+        payload = {
+            "id": self.id,
+            "section_id": self.section_id,
+            "title": self.title,
+            "item_type": self.item_type,
+            "sort_order": self.sort_order,
+        }
+        if include_section:
+            payload["section"] = (
+                {
+                    "id": self.section.id,
+                    "title": self.section.title,
+                    "sort_order": self.section.sort_order,
+                }
+                if self.section
+                else None
+            )
+        return payload
 
 
 class FormItem(TimestampMixin, db.Model):

@@ -55,6 +55,7 @@ const units = ref([]);
 const levels = ref([]);
 const groups = ref([]);
 const periods = ref([]);
+const templates = ref([]);
 const forms = ref([]);
 const overview = ref([]);
 const tasks = ref([]);
@@ -88,13 +89,17 @@ const emptyFormBuilder = () => ({
   show_intro: true,
   intro_text: "请认真阅读测评说明，客观、公正、独立完成本次民主测评。",
   intro_seconds: 5,
-  unit_ids: [],
-  group_id: "",
-  period_id: "",
   options: defaultOptions(),
   sections: defaultSections(),
 });
 const formBuilder = ref(emptyFormBuilder());
+const emptyTaskBuilder = () => ({
+  template_id: "",
+  unit_ids: [],
+  group_id: "",
+  period_id: "",
+});
+const taskBuilder = ref(emptyTaskBuilder());
 
 const survey = ref(null);
 const surveyAnswers = ref({});
@@ -115,7 +120,8 @@ const navItems = computed(() => {
       { key: "levels", label: "测评人员层级管理", icon: Layers3 },
       { key: "groups", label: "巡察组管理", icon: Users },
       { key: "periods", label: "时间任务", icon: CalendarRange },
-      { key: "forms", label: "测评表单", icon: ClipboardList },
+      { key: "templates", label: "测评表单模板", icon: ClipboardList },
+      { key: "launch", label: "发起任务", icon: Target },
       { key: "stats", label: "统计分析", icon: CheckCircle2 },
     ];
   }
@@ -129,7 +135,7 @@ const navItems = computed(() => {
 const summary = computed(() => [
   { label: "单位", value: units.value.length, tone: "green" },
   { label: "巡察组", value: groups.value.length, tone: "orange" },
-  { label: "测评表", value: forms.value.length, tone: "blue" },
+  { label: "表单模板", value: templates.value.length, tone: "blue" },
   {
     label: "已提交/目标",
     value: `${overview.value.reduce((sum, item) => sum + item.progress.response_count, 0)}/${overview.value.reduce((sum, item) => sum + item.progress.target_count, 0)}`,
@@ -231,12 +237,22 @@ function acknowledgeIntro() {
 async function loadData() {
   if (!user.value) return;
   if (isRoot.value) {
-    const [unitData, levelData, groupData, periodData, formData, statData, taskData] =
+    const [
+      unitData,
+      levelData,
+      groupData,
+      periodData,
+      templateData,
+      formData,
+      statData,
+      taskData,
+    ] =
       await Promise.all([
         api("/units"),
         api("/levels"),
         api("/groups"),
         api("/periods"),
+        api("/templates"),
         api("/forms"),
         api("/stats/overview"),
         api("/tasks/progress"),
@@ -245,6 +261,7 @@ async function loadData() {
     levels.value = levelData.items;
     groups.value = groupData.items;
     periods.value = periodData.items;
+    templates.value = templateData.items;
     forms.value = formData.items;
     overview.value = statData.items;
     tasks.value = taskData.items;
@@ -359,13 +376,24 @@ function removeSectionItem(section, index) {
 
 async function createEvaluationForm() {
   await run(async () => {
-    await api("/forms", {
+    await api("/templates", {
       method: "POST",
       body: JSON.stringify(formBuilder.value),
     });
     formBuilder.value = emptyFormBuilder();
     await loadData();
-  }, "测评表已创建并分配");
+  }, "测评表单模板已保存");
+}
+
+async function launchEvaluationTask() {
+  await run(async () => {
+    await api("/forms", {
+      method: "POST",
+      body: JSON.stringify(taskBuilder.value),
+    });
+    taskBuilder.value = emptyTaskBuilder();
+    await loadData();
+  }, "测评任务已发起");
 }
 
 async function deleteItem(resource, id, successText) {
@@ -375,12 +403,18 @@ async function deleteItem(resource, id, successText) {
   }, successText);
 }
 
+async function deleteTemplate(item) {
+  const confirmed = window.confirm(`确定删除模板「${item.title}」吗？已发起任务不会被删除。`);
+  if (!confirmed) return;
+  await deleteItem("templates", item.id, "测评表单模板已删除");
+}
+
 async function deleteForm(item) {
   const confirmed = window.confirm(
-    `确定删除「${item.title}」吗？相关二维码、进度和已提交测评数据都会同步删除。`,
+    `确定删除任务「${item.title}」吗？相关二维码、进度和已提交测评数据都会同步删除。`,
   );
   if (!confirmed) return;
-  await deleteItem("forms", item.id, "测评表及相关数据已删除");
+  await deleteItem("forms", item.id, "测评任务及相关数据已删除");
 }
 
 async function loadLinks(formId) {
@@ -931,15 +965,15 @@ onMounted(async () => {
         </section>
       </section>
 
-      <section v-if="active === 'forms'" class="management-grid wide-left">
+      <section v-if="active === 'templates'" class="management-grid wide-left">
         <section class="panel">
           <div class="panel-head">
-            <h2>创建测评表</h2>
+            <h2>创建测评表单模板</h2>
           </div>
           <form class="stack" @submit.prevent="createEvaluationForm">
             <label>
-              表单名称
-              <input v-model="formBuilder.title" placeholder="民主测评表" />
+              模板名称
+              <input v-model="formBuilder.title" placeholder="民主测评表模板" />
             </label>
             <label>
               说明
@@ -970,37 +1004,6 @@ onMounted(async () => {
                   max="60"
                   :disabled="!formBuilder.show_intro"
                 />
-              </label>
-            </div>
-            <div class="assignment-grid">
-              <label class="unit-picker-field">
-                单位
-                <div class="unit-multi-picker">
-                  <label v-for="item in units" :key="item.id" class="checkline option-check">
-                    <input v-model="formBuilder.unit_ids" type="checkbox" :value="item.id" />
-                    {{ item.name }}
-                  </label>
-                  <span v-if="!units.length" class="muted">请先创建单位</span>
-                </div>
-                <small>已选择 {{ formBuilder.unit_ids.length }} 个单位，每个单位会生成一张测评表。</small>
-              </label>
-              <label>
-                巡察组
-                <select v-model="formBuilder.group_id">
-                  <option disabled value="">选择巡察组</option>
-                  <option v-for="item in groups" :key="item.id" :value="item.id">
-                    {{ item.name }}
-                  </option>
-                </select>
-              </label>
-              <label>
-                时间任务
-                <select v-model="formBuilder.period_id">
-                  <option disabled value="">选择时间任务</option>
-                  <option v-for="item in periods" :key="item.id" :value="item.id">
-                    {{ item.name }}
-                  </option>
-                </select>
               </label>
             </div>
 
@@ -1116,20 +1119,110 @@ onMounted(async () => {
 
             <button class="primary" type="submit">
               <Save :size="18" />
-              保存并分配
+              保存模板
             </button>
           </form>
         </section>
         <section class="panel">
           <div class="panel-head">
-            <h2>测评表列表</h2>
+            <h2>测评表单模板列表</h2>
+          </div>
+          <div class="record-list">
+            <div v-for="item in templates" :key="item.id" class="form-record">
+              <strong>{{ item.title }}</strong>
+              <span>{{ item.description || "未填写说明" }}</span>
+              <small>
+                {{ item.sections.length }} 个维度 · {{ item.items.length }} 个测评项 · 已发起 {{ item.task_count }} 个任务
+              </small>
+              <div class="record-actions">
+                <button
+                  class="icon danger"
+                  title="删除"
+                  type="button"
+                  @click="deleteTemplate(item)"
+                >
+                  <Trash2 :size="17" />
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section v-if="active === 'launch'" class="management-grid wide-left">
+        <section class="panel">
+          <div class="panel-head">
+            <h2>发起测评任务</h2>
+          </div>
+          <form class="stack" @submit.prevent="launchEvaluationTask">
+            <div class="subpanel first-subpanel">
+              <div class="panel-head compact-head">
+                <h2>选择表单模板</h2>
+              </div>
+              <div class="template-choice-grid">
+                <label
+                  v-for="item in templates"
+                  :key="item.id"
+                  class="template-choice-card"
+                  :class="{ selected: Number(taskBuilder.template_id) === item.id }"
+                >
+                  <input v-model="taskBuilder.template_id" type="radio" :value="item.id" />
+                  <strong>{{ item.title }}</strong>
+                  <span>{{ item.description || "未填写说明" }}</span>
+                  <small>{{ item.sections.length }} 个维度 · {{ item.items.length }} 个测评项</small>
+                </label>
+                <div v-if="!templates.length" class="empty-state">请先创建测评表单模板。</div>
+              </div>
+            </div>
+
+            <div class="assignment-grid">
+              <label class="unit-picker-field">
+                单位
+                <div class="unit-multi-picker">
+                  <label v-for="item in units" :key="item.id" class="checkline option-check">
+                    <input v-model="taskBuilder.unit_ids" type="checkbox" :value="item.id" />
+                    {{ item.name }}
+                  </label>
+                  <span v-if="!units.length" class="muted">请先创建单位</span>
+                </div>
+                <small>已选择 {{ taskBuilder.unit_ids.length }} 个单位，每个单位会发起一个任务。</small>
+              </label>
+              <label>
+                巡察组
+                <select v-model="taskBuilder.group_id">
+                  <option disabled value="">选择巡察组</option>
+                  <option v-for="item in groups" :key="item.id" :value="item.id">
+                    {{ item.name }}
+                  </option>
+                </select>
+              </label>
+              <label>
+                时间任务
+                <select v-model="taskBuilder.period_id">
+                  <option disabled value="">选择时间任务</option>
+                  <option v-for="item in periods" :key="item.id" :value="item.id">
+                    {{ item.name }}
+                  </option>
+                </select>
+              </label>
+            </div>
+
+            <button class="primary" type="submit">
+              <Target :size="18" />
+              发起任务
+            </button>
+          </form>
+        </section>
+        <section class="panel">
+          <div class="panel-head">
+            <h2>已发起任务</h2>
           </div>
           <div class="record-list">
             <div v-for="item in forms" :key="item.id" class="form-record">
               <strong>{{ item.title }}</strong>
               <span>{{ item.period.name }} · {{ item.unit.name }} · {{ item.group.name }}</span>
               <small>
-                进度 {{ item.progress.response_count }}/{{ item.progress.target_count }}
+                模板 {{ item.template?.title || "已删除模板" }} · 进度 {{ item.progress.response_count }}/{{ item.progress.target_count }}
               </small>
               <div class="record-actions">
                 <button class="ghost icon-text" type="button" @click="viewStats(item.id)">

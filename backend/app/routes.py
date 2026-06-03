@@ -13,6 +13,7 @@ from .extensions import db
 from .models import (
     DEFAULT_FORM_OPTIONS,
     EvaluationForm,
+    FormTemplate,
     FormItem,
     FormOption,
     FormSection,
@@ -22,6 +23,9 @@ from .models import (
     SurveyAnswer,
     SurveyLink,
     SurveyResponse,
+    TemplateItem,
+    TemplateOption,
+    TemplateSection,
     Unit,
 )
 
@@ -118,6 +122,13 @@ def get_form_or_404(form_id):
     return form
 
 
+def get_template_or_404(template_id):
+    template = db.session.get(FormTemplate, template_id)
+    if not template:
+        raise NotFound("template not found")
+    return template
+
+
 def ensure_group_can_access_form(identity, form):
     if identity.get("role") == "root":
         return
@@ -158,6 +169,76 @@ def parse_unit_ids(data):
     if set(unit_ids) != existing_ids:
         raise NotFound("unit not found")
     return unit_ids
+
+
+def apply_template_structure(template, data):
+    template.options = [
+        TemplateOption(**option) for option in normalize_options(data.get("options"))
+    ]
+    template.sections = []
+    for section_data in normalize_sections(data):
+        section = TemplateSection(
+            title=section_data["title"],
+            sort_order=section_data["sort_order"],
+        )
+        for item_data in section_data["items"]:
+            section.items.append(TemplateItem(template=template, **item_data))
+        template.sections.append(section)
+
+
+def build_template_from_data(data):
+    template = FormTemplate(
+        title=require_text(data, "title"),
+        description=str(data.get("description", "")).strip(),
+    )
+    apply_intro_settings(template, data)
+    apply_template_structure(template, data)
+    return template
+
+
+def copy_template_structure_to_form(template, form):
+    form.options = [
+        FormOption(
+            label=option.label,
+            value=option.value,
+            score_weight=option.score_weight,
+            sort_order=option.sort_order,
+        )
+        for option in template.options
+    ]
+    form.sections = []
+    for template_section in template.sections:
+        section = FormSection(
+            title=template_section.title,
+            sort_order=template_section.sort_order,
+        )
+        for template_item in template_section.items:
+            section.items.append(
+                FormItem(
+                    form=form,
+                    title=template_item.title,
+                    item_type=template_item.item_type,
+                    sort_order=template_item.sort_order,
+                )
+            )
+        form.sections.append(section)
+
+
+def build_form_from_template(template, data, unit_id):
+    form = EvaluationForm(
+        template_id=template.id,
+        title=template.title,
+        description=template.description,
+        status=str(data.get("status", "active")).strip() or "active",
+        show_intro=template.show_intro,
+        intro_text=template.intro_text,
+        intro_seconds=template.intro_seconds,
+        unit_id=unit_id,
+        group_id=require_int(data, "group_id"),
+        period_id=require_int(data, "period_id"),
+    )
+    copy_template_structure_to_form(template, form)
+    return form
 
 
 def build_form_from_data(data, unit_id):
@@ -746,6 +827,59 @@ def delete_period(_identity, period_id):
     return {"ok": True}
 
 
+@api.get("/templates")
+@auth_required("root")
+def list_templates(_identity):
+    templates = FormTemplate.query.order_by(FormTemplate.created_at.desc()).all()
+    return {
+        "items": [
+            template.to_dict(include_structure=True)
+            for template in templates
+        ]
+    }
+
+
+@api.post("/templates")
+@auth_required("root")
+def create_template(_identity):
+    template = build_template_from_data(parse_json())
+    db.session.add(template)
+    db.session.commit()
+    return template.to_dict(), 201
+
+
+@api.get("/templates/<int:template_id>")
+@auth_required("root")
+def get_template(_identity, template_id):
+    return get_template_or_404(template_id).to_dict()
+
+
+@api.put("/templates/<int:template_id>")
+@auth_required("root")
+def update_template(_identity, template_id):
+    template = get_template_or_404(template_id)
+    data = parse_json()
+    template.title = require_text(data, "title")
+    template.description = str(data.get("description", "")).strip()
+    apply_intro_settings(template, data)
+    apply_template_structure(template, data)
+    db.session.commit()
+    return template.to_dict()
+
+
+@api.delete("/templates/<int:template_id>")
+@auth_required("root")
+def delete_template(_identity, template_id):
+    template = get_template_or_404(template_id)
+    EvaluationForm.query.filter_by(template_id=template.id).update(
+        {"template_id": None},
+        synchronize_session=False,
+    )
+    db.session.delete(template)
+    db.session.commit()
+    return {"ok": True}
+
+
 @api.get("/forms")
 @auth_required("root", "group")
 def list_forms(identity):
@@ -768,7 +902,18 @@ def list_forms(identity):
 @auth_required("root")
 def create_form(_identity):
     data = parse_json()
-    forms = [build_form_from_data(data, unit_id) for unit_id in parse_unit_ids(data)]
+    template_id = data.get("template_id")
+    if template_id:
+        try:
+            template = get_template_or_404(int(template_id))
+        except (TypeError, ValueError) as exc:
+            raise BadRequest("请选择测评表单模板") from exc
+        forms = [
+            build_form_from_template(template, data, unit_id)
+            for unit_id in parse_unit_ids(data)
+        ]
+    else:
+        forms = [build_form_from_data(data, unit_id) for unit_id in parse_unit_ids(data)]
     db.session.add_all(forms)
     db.session.commit()
     if len(forms) == 1:

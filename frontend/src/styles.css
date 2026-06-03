@@ -660,8 +660,7 @@ a {
   padding: 0;
 }
 
-.qr-item img,
-.qr-modal img {
+.qr-item img {
   width: 112px;
   height: 112px;
   border: 1px solid #e0e4e9;
@@ -785,6 +784,11 @@ a {
   padding-top: 18px;
 }
 
+.first-subpanel {
+  border-top: 0;
+  padding-top: 0;
+}
+
 .compact-head {
   margin-bottom: 0;
 }
@@ -797,6 +801,45 @@ a {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 120px auto;
   gap: 10px;
+}
+
+.template-choice-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.template-choice-card {
+  position: relative;
+  display: grid;
+  gap: 4px;
+  border: 1px solid #e0e4e9;
+  border-radius: 8px;
+  background: #fff;
+  padding: 14px 14px 14px 44px;
+  color: #303740;
+  cursor: pointer;
+}
+
+.template-choice-card input {
+  position: absolute;
+  left: 14px;
+  top: 17px;
+  width: 18px;
+  height: 18px;
+}
+
+.template-choice-card strong {
+  color: #202124;
+}
+
+.template-choice-card span,
+.template-choice-card small {
+  color: #6d7580;
+}
+
+.template-choice-card.selected {
+  border-color: #1f8a70;
+  background: #f5faf8;
 }
 
 .section-block {
@@ -1024,15 +1067,31 @@ a {
 
 .qr-modal {
   width: min(100%, 520px);
+  max-height: calc(100vh - 40px);
+  overflow: auto;
   border-radius: 8px;
   background: #fff;
   padding: 20px;
+}
+
+.qr-modal .panel-head {
+  align-items: flex-start;
+}
+
+.qr-modal .panel-head > div {
+  min-width: 0;
+}
+
+.qr-modal p {
+  overflow-wrap: anywhere;
 }
 
 .qr-modal img {
   display: block;
   width: min(100%, 360px);
   height: auto;
+  border: 1px solid #e0e4e9;
+  border-radius: 8px;
   margin: 12px auto 0;
 }
 
