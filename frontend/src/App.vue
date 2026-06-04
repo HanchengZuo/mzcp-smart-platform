@@ -13,6 +13,7 @@ import {
   GripVertical,
   Layers3,
   LogOut,
+  Pencil,
   Plus,
   QrCode,
   RefreshCw,
@@ -22,6 +23,7 @@ import {
   Trash2,
   UserRound,
   Users,
+  X,
 } from "@lucide/vue";
 import { api, apiUrl, getToken, setToken } from "./api";
 
@@ -95,6 +97,7 @@ const emptyFormBuilder = () => ({
   sections: defaultSections(),
 });
 const formBuilder = ref(emptyFormBuilder());
+const editingTemplateId = ref(null);
 const emptyTaskBuilder = () => ({
   template_ids: [],
   unit_ids: [],
@@ -150,6 +153,9 @@ const selectedTaskTemplates = computed(() =>
   taskBuilder.value.template_ids
     .map((templateId) => templates.value.find((item) => item.id === Number(templateId)))
     .filter(Boolean),
+);
+const editingTemplate = computed(() =>
+  templates.value.find((item) => item.id === editingTemplateId.value) || null,
 );
 
 const surveyForms = computed(() => survey.value?.forms?.length ? survey.value.forms : survey.value ? [survey.value] : []);
@@ -387,6 +393,46 @@ function removeSectionItem(section, index) {
   section.items.splice(index, 1);
 }
 
+function builderFromTemplate(template) {
+  const options = template.options?.length
+    ? template.options.map((option) => ({
+        label: option.label,
+        score_weight: option.score_weight,
+      }))
+    : defaultOptions();
+  const sections = template.sections?.length
+    ? template.sections.map((section) => ({
+        title: section.title,
+        items: section.items?.length
+          ? section.items.map((item) => ({
+              title: item.title,
+              item_type: item.item_type || "choice",
+            }))
+          : [{ title: "", item_type: "choice" }],
+      }))
+    : defaultSections();
+  return {
+    title: template.title || "",
+    description: template.description || "",
+    show_intro: Boolean(template.show_intro),
+    intro_text: template.intro_text || "",
+    intro_seconds: Number(template.intro_seconds || 0),
+    options,
+    sections,
+  };
+}
+
+function resetTemplateBuilder() {
+  editingTemplateId.value = null;
+  formBuilder.value = emptyFormBuilder();
+}
+
+function editTemplate(item) {
+  editingTemplateId.value = item.id;
+  formBuilder.value = builderFromTemplate(item);
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
 function moveTaskTemplate(index, direction) {
   const target = index + direction;
   if (target < 0 || target >= taskBuilder.value.template_ids.length) return;
@@ -396,15 +442,16 @@ function moveTaskTemplate(index, direction) {
   taskBuilder.value.template_ids = next;
 }
 
-async function createEvaluationForm() {
+async function saveEvaluationFormTemplate() {
   await run(async () => {
-    await api("/templates", {
-      method: "POST",
+    const templateId = editingTemplateId.value;
+    await api(templateId ? `/templates/${templateId}` : "/templates", {
+      method: templateId ? "PUT" : "POST",
       body: JSON.stringify(formBuilder.value),
     });
-    formBuilder.value = emptyFormBuilder();
+    resetTemplateBuilder();
     await loadData();
-  }, "测评表单模板已保存");
+  }, editingTemplateId.value ? "测评表单模板已更新" : "测评表单模板已保存");
 }
 
 async function launchEvaluationTask() {
@@ -419,7 +466,7 @@ async function launchEvaluationTask() {
 }
 
 async function deleteItem(resource, id, successText) {
-  await run(async () => {
+  return await run(async () => {
     await api(`/${resource}/${id}`, { method: "DELETE" });
     await loadData();
   }, successText);
@@ -428,7 +475,8 @@ async function deleteItem(resource, id, successText) {
 async function deleteTemplate(item) {
   const confirmed = window.confirm(`确定删除模板「${item.title}」吗？已发起任务不会被删除。`);
   if (!confirmed) return;
-  await deleteItem("templates", item.id, "测评表单模板已删除");
+  const result = await deleteItem("templates", item.id, "测评表单模板已删除");
+  if (result !== null && editingTemplateId.value === item.id) resetTemplateBuilder();
 }
 
 async function deleteForm(item) {
@@ -1038,9 +1086,21 @@ onMounted(async () => {
       <section v-if="active === 'templates'" class="management-grid wide-left">
         <section class="panel">
           <div class="panel-head">
-            <h2>创建测评表单模板</h2>
+            <div>
+              <h2>{{ editingTemplate ? "编辑测评表单模板" : "创建测评表单模板" }}</h2>
+              <p v-if="editingTemplate">正在编辑：{{ editingTemplate.title }}</p>
+            </div>
+            <button
+              v-if="editingTemplate"
+              class="ghost icon-text"
+              type="button"
+              @click="resetTemplateBuilder"
+            >
+              <X :size="17" />
+              取消编辑
+            </button>
           </div>
-          <form class="stack" @submit.prevent="createEvaluationForm">
+          <form class="stack" @submit.prevent="saveEvaluationFormTemplate">
             <label>
               模板名称
               <input v-model="formBuilder.title" placeholder="民主测评表模板" />
@@ -1189,7 +1249,7 @@ onMounted(async () => {
 
             <button class="primary" type="submit">
               <Save :size="18" />
-              保存模板
+              {{ editingTemplate ? "保存修改" : "保存模板" }}
             </button>
           </form>
         </section>
@@ -1198,13 +1258,27 @@ onMounted(async () => {
             <h2>测评表单模板列表</h2>
           </div>
           <div class="record-list">
-            <div v-for="item in templates" :key="item.id" class="form-record">
+            <div
+              v-for="item in templates"
+              :key="item.id"
+              class="form-record"
+              :class="{ active: editingTemplateId === item.id }"
+            >
               <strong>{{ item.title }}</strong>
               <span>{{ item.description || "未填写说明" }}</span>
               <small>
                 {{ item.sections.length }} 个维度 · {{ item.items.length }} 个测评项 · 已发起 {{ item.task_count }} 个任务
               </small>
               <div class="record-actions">
+                <button
+                  class="ghost icon-text"
+                  title="编辑"
+                  type="button"
+                  @click="editTemplate(item)"
+                >
+                  <Pencil :size="17" />
+                  编辑
+                </button>
                 <button
                   class="icon danger"
                   title="删除"

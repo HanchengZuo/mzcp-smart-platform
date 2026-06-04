@@ -543,6 +543,11 @@ a {
   padding: 13px;
 }
 
+.form-record.active {
+  border-color: #1f8a70;
+  box-shadow: inset 4px 0 0 #1f8a70;
+}
+
 .form-record span,
 .form-record small {
   grid-column: 1;

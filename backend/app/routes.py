@@ -214,11 +214,18 @@ def parse_unit_ids(data):
 
 
 def apply_template_structure(template, data):
+    options = normalize_options(data.get("options"))
+    sections = normalize_sections(data)
+    if template.id:
+        template.options.clear()
+        template.sections.clear()
+        db.session.flush()
+
     template.options = [
-        TemplateOption(**option) for option in normalize_options(data.get("options"))
+        TemplateOption(**option) for option in options
     ]
     template.sections = []
-    for section_data in normalize_sections(data):
+    for section_data in sections:
         section = TemplateSection(
             title=section_data["title"],
             sort_order=section_data["sort_order"],

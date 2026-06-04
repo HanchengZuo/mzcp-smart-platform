@@ -194,6 +194,61 @@ def test_root_to_public_survey_flow():
     assert client.get(f"/api/stats/forms/{first_form['id']}", headers=headers).status_code == 404
 
 
+def test_update_template_keeps_launched_forms_unchanged():
+    app = create_app(
+        {
+            "TESTING": True,
+            "SQLALCHEMY_DATABASE_URI": "sqlite:///:memory:",
+            "JWT_SECRET": "test-secret",
+        }
+    )
+    client = app.test_client()
+    headers = auth_headers(client)
+    _unit, _group, _period, task = create_base_task(client, headers)
+    launched_form = task["forms"][0]
+    template_id = launched_form["template_id"]
+
+    update = client.put(
+        f"/api/templates/{template_id}",
+        json={
+            "title": "编辑后的测评模板",
+            "description": "编辑后的说明",
+            "show_intro": False,
+            "intro_text": "",
+            "intro_seconds": 0,
+            "options": [
+                {"label": "通过", "score_weight": 100},
+                {"label": "不通过", "score_weight": 0},
+            ],
+            "sections": [
+                {
+                    "title": "编辑后的维度",
+                    "items": [
+                        {"title": "编辑后的选择题", "item_type": "choice"},
+                        {"title": "编辑后的问答题", "item_type": "text"},
+                    ],
+                }
+            ],
+        },
+        headers=headers,
+    )
+    assert update.status_code == 200
+    update_json = update.get_json()
+    assert update_json["title"] == "编辑后的测评模板"
+    assert update_json["sections"][0]["title"] == "编辑后的维度"
+    assert [item["item_type"] for item in update_json["sections"][0]["items"]] == [
+        "choice",
+        "text",
+    ]
+
+    existing_form = client.get(f"/api/forms/{launched_form['id']}", headers=headers)
+    assert existing_form.status_code == 200
+    existing_form_json = existing_form.get_json()
+    assert existing_form_json["title"] == "民主测评表"
+    assert existing_form_json["sections"][0]["title"] == "政治建设"
+    assert len(existing_form_json["items"]) == 3
+
+
 def test_create_form_with_multiple_units():
     app = create_app(
         {
